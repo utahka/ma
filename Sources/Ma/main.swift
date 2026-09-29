@@ -34,8 +34,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sidebar.onSelect = { [vault] url in vault.open(url) }
         editor.onChange = { [vault] text in vault.textDidChange(text) }
         vault.onTreeChange = { [unowned self] in sidebar.reload(vault.tree) }
+        sidebar.calendarView.onSelectDate = { [vault] date in vault.openDailyNote(for: date) }
+        vault.onNotesChange = { [unowned self] in
+            let calendar = sidebar.calendarView
+            calendar.firstWeekday = vault.dailyNotes?.settings.firstWeekday ?? Calendar.current.firstWeekday
+            calendar.hasNote = vault.dailyNotes.map { notes in { notes.exists(for: $0) } }
+        }
         vault.onDocumentChange = { [unowned self] in
             editor.show(vault.document)
+            sidebar.calendarView.selectedDate = vault.document.flatMap { vault.dailyNotes?.date(of: $0.url) }
             window.title = vault.document?.url.deletingPathExtension().lastPathComponent ?? "Ma"
             window.subtitle = vault.root?.lastPathComponent ?? ""
         }
@@ -75,6 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openFolder(_ sender: Any?) { vault.chooseFolder() }
     @objc func save(_ sender: Any?) { vault.saveNow() }
+    @objc func openTodayNote(_ sender: Any?) {
+        vault.openDailyNote(for: Date())
+        sidebar.calendarView.show(month: Date())
+    }
 
     private func makeMainMenu() -> NSMenu {
         let main = NSMenu()
@@ -86,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = NSMenu(title: "ファイル")
         file.addItem(withTitle: "フォルダを開く…", action: #selector(openFolder(_:)), keyEquivalent: "o")
         file.addItem(withTitle: "保存", action: #selector(save(_:)), keyEquivalent: "s")
+        file.addItem(withTitle: "今日のデイリーノート", action: #selector(openTodayNote(_:)), keyEquivalent: "d")
         file.addItem(.separator())
         file.addItem(withTitle: "閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         main.addItem(submenu: file, title: "ファイル")

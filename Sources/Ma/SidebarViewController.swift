@@ -1,8 +1,9 @@
 import AppKit
 
-/// vault のファイルツリー。ノートを選ぶと `onSelect` を呼ぶ
+/// vault のファイルツリーと、その下のカレンダー。ノートを選ぶと `onSelect` を呼ぶ
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
     var onSelect: ((URL) -> Void)?
+    let calendarView = CalendarView()
 
     private let outlineView = NSOutlineView()
     private var tree: [FileNode] = []
@@ -22,7 +23,29 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
         scrollView.documentView = outlineView
-        view = scrollView
+
+        let separator = NSBox()
+        separator.boxType = .separator
+
+        let container = NSView()
+        for view in [scrollView, separator, calendarView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            separator.topAnchor.constraint(equalTo: scrollView.bottomAnchor),
+            separator.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            calendarView.topAnchor.constraint(equalTo: separator.bottomAnchor),
+            calendarView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            calendarView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            calendarView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            calendarView.heightAnchor.constraint(equalToConstant: CalendarView.preferredHeight),
+        ])
+        view = container
     }
 
     func reload(_ tree: [FileNode]) {

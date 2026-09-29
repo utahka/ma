@@ -35,9 +35,12 @@ final class Vault {
     private(set) var root: URL?
     private(set) var tree: [FileNode] = []
     private(set) var document: OpenDocument?
+    private(set) var dailyNotes: DailyNotes?
 
     var onTreeChange: (() -> Void)?
     var onDocumentChange: (() -> Void)?
+    /// vault を開いたときとデイリーノートを作ったとき（カレンダーの点を打ち直す）
+    var onNotesChange: (() -> Void)?
 
     private var pendingText: String?
     private var saveTask: Task<Void, Never>?
@@ -67,15 +70,40 @@ final class Vault {
         root = url
         tree = []
         document = nil
+        dailyNotes = DailyNotes(root: url)
         onTreeChange?()
         onDocumentChange?()
+        onNotesChange?()
         if remember { AppDefaults.shared.set(url.path, forKey: Self.lastRootKey) }
+        rescan()
+    }
+
+    private func rescan() {
+        guard let url = root else { return }
         Task {
             let scanned = await Task.detached { Self.scan(url) }.value
             guard root == url else { return }
             tree = scanned
             onTreeChange?()
         }
+    }
+
+    /// その日のデイリーノートを開く。なければテンプレートから作る
+    func openDailyNote(for date: Date) {
+        guard let dailyNotes else { return }
+        let url = dailyNotes.url(for: date)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try dailyNotes.initialText(for: date).write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                NSLog("デイリーノートの作成に失敗: \(url.path): \(error)")
+                return
+            }
+            rescan()
+            onNotesChange?()
+        }
+        open(url)
     }
 
     func open(_ url: URL) {

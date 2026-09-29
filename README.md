@@ -15,6 +15,7 @@ Obsidian のように、ファイルは素の Markdown のまま、見た目だ�
 - 表の行の追加: 表にマウスを載せると下端に「＋」が出て、押すと空の行を足す
 - タスク（`- [ ]`）: チェックボックスとして描き、クリックでチェックを切り替える
 - Obsidian のコールアウト（`> [!note]` など）: 種類ごとの色とアイコンで枠を描く。`[!note]-` はカーソルが外にあるあいだ本文をたたむ
+- カレンダー（Obsidian の Calendar プラグイン相当）: サイドバーの下に月のカレンダーを出す。デイリーノートのある日に点を打ち、日付を押すとその日のノートを開く。ない日は押すとテンプレートから作る。⌘D で今日のノートを開く。置き場所・日付書式・テンプレートは `.obsidian/daily-notes.json`、週の始まりは Calendar プラグインの設定から読む。Templater の `<% %>` は実行できないので取り除く
 - `open -a Ma ノート.md` でファイルを直接開く
 
 ## ビルド
@@ -33,7 +34,9 @@ make install  # /Applications にコピー
 |---|---|
 | `main.swift` | 起動処理・メニュー・ウィンドウ |
 | `Vault.swift` | フォルダの走査、ノートの読み込みと保存 |
-| `SidebarViewController.swift` | ファイルツリー（NSOutlineView） |
+| `SidebarViewController.swift` | ファイルツリー（NSOutlineView）とカレンダー |
+| `CalendarView.swift` | 月のカレンダーの描画とクリック |
+| `DailyNotes.swift` | デイリーノートの設定の読み込み、日付とファイル名の対応、テンプレートの展開 |
 | `EditorViewController.swift` | エディタ（TextKit 2 の NSTextView） |
 | `MarkdownStyler.swift` | 文字属性によるライブプレビュー。表・コールアウトの範囲を判定し、段落に装飾を付ける |
 | `BlockLayoutFragment.swift` | TextKit 2 のレイアウトフラグメント。表の罫線とセル、コールアウトの背景とアイコンを描く |
