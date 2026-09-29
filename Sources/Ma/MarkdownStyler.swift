@@ -358,7 +358,7 @@ struct MarkdownStyler {
             style.minimumLineHeight = 24
             // 枠の内側の上下の余白。段落の前後の間隔もフラグメントに含まれ、背景が塗られる
             if isFirst && callout != nil { style.paragraphSpacingBefore = 4 }
-            if isLast && callout != nil { style.paragraphSpacing = 12 }
+            if isLast && callout != nil { style.paragraphSpacing = 18 }
 
             if let header, isFirst, let callout {
                 let title = header.range(at: 3)
@@ -408,6 +408,13 @@ struct MarkdownStyler {
         if let match = heading.firstMatch(in: text, range: line) {
             let level = match.range(at: 1).length
             storage.addAttribute(.font, value: NSFont.systemFont(ofSize: headingSizes[level], weight: .bold), range: line)
+            // h1・h2 は上下に余白を空け、前後の本文と区切る。文書の先頭の見出しには上の余白を付けない
+            if level <= 2 {
+                let style = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
+                style.paragraphSpacing = level == 1 ? 14 : 10
+                style.paragraphSpacingBefore = line.location == 0 ? 0 : (level == 1 ? 20 : 16)
+                storage.addAttribute(.paragraphStyle, value: style, range: line)
+            }
             marker(match.range, in: storage, active: active)
         } else if let match = quote.firstMatch(in: text, range: line) {
             storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: line)
@@ -439,6 +446,11 @@ struct MarkdownStyler {
                     .strikethroughStyle: NSUnderlineStyle.single.rawValue,
                 ], range: rest)
             }
+        } else if line.length > 0 {
+            // 通常の段落は下に余白を空ける（箇条書きは詰めたまま。空行は元から間隔になる）
+            let style = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
+            style.paragraphSpacing = 6
+            storage.addAttribute(.paragraphStyle, value: style, range: line)
         }
     }
 
