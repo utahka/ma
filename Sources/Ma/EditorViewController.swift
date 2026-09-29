@@ -258,14 +258,18 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         scrollView.backgroundColor = .textBackgroundColor
         scrollView.documentView = textView
 
+        // NSScrollView に直接載せたサブビューは制約どおりに置かれないので、入れ物のビューに並べる
+        let container = NSView()
+        scrollView.autoresizingMask = [.width, .height]
+        container.addSubview(scrollView)
         placeholder.textColor = .secondaryLabelColor
         placeholder.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.addSubview(placeholder)
+        container.addSubview(placeholder)
         NSLayoutConstraint.activate([
-            placeholder.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
-            placeholder.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
+            placeholder.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            placeholder.centerYAnchor.constraint(equalTo: container.centerYAnchor),
         ])
-        view = scrollView
+        view = container
         show(nil)
     }
 

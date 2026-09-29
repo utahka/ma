@@ -14,8 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let split = NSSplitViewController()
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = 180
-        split.addSplitViewItem(sidebarItem)
-        split.addSplitViewItem(NSSplitViewItem(viewController: editor))
+        let editorItem = NSSplitViewItem(viewController: editor)
+        // タイトルバーの下にタブを並べるので、タイトルバーと本文の区切り線は出さない
+        for item in [sidebarItem, editorItem] {
+            item.titlebarSeparatorStyle = .none
+            split.addSplitViewItem(item)
+        }
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
@@ -30,6 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.setFrameAutosaveName("main")
         window.title = "Ma"
+        window.titlebarSeparatorStyle = .none
+        // タイトルバーの帯と文字は出さず、信号機ボタンだけ本文の上に重ねる（タイトルは Mission Control やウィンドウメニューで使われる）
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
 
         sidebar.onSelect = { [vault] url in vault.open(url) }
         editor.onChange = { [vault] text in vault.textDidChange(text) }
