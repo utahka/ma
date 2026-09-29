@@ -16,6 +16,7 @@ final class EditorTextView: NSTextView {
     private var hoverTrackingArea: NSTrackingArea?
     private let addRowButton = NSButton()
     private var hoveredTable: TableLayout?
+    private lazy var blockDrag = BlockDragController(textView: self)
 
     // init を上書きすると init(usingTextLayoutManager:) が継承されなくなるので、配置された時点で準備する
     override func viewDidMoveToSuperview() {
@@ -30,6 +31,13 @@ final class EditorTextView: NSTextView {
         addRowButton.action = #selector(addRow(_:))
         addRowButton.isHidden = true
         addSubview(addRowButton)
+        addSubview(blockDrag.handle)
+        addSubview(blockDrag.indicator)
+    }
+
+    // ノートを切り替えたときも、ブロックの読み直しが要る
+    override var string: String {
+        didSet { blockDrag.textDidChange() }
     }
 
     /// 本文の幅が変わったとき。表の列幅（収まらないときの縮小）を計算し直すのに使う
@@ -52,6 +60,7 @@ final class EditorTextView: NSTextView {
     override func didChangeText() {
         super.didChangeText()
         hideAddRowButton()
+        blockDrag.textDidChange()
     }
 
     override func updateTrackingAreas() {
@@ -68,6 +77,7 @@ final class EditorTextView: NSTextView {
         super.mouseMoved(with: event)
         let point = convert(event.locationInWindow, from: nil)
         updateAddRowButton(at: point)
+        blockDrag.hover(at: point)
         if columnEdge(at: point) != nil {
             NSCursor.resizeLeftRight.set()
         } else if checkbox(at: point) != nil {
@@ -78,6 +88,7 @@ final class EditorTextView: NSTextView {
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         hideAddRowButton()
+        blockDrag.hideHandle()
     }
 
     override func mouseDown(with event: NSEvent) {
