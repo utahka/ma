@@ -16,6 +16,13 @@ final class FileNode {
     }
 }
 
+/// アプリの設定の保存先。動作確認では環境変数 MA_DEFAULTS_SUITE で別の保存先を指定し、
+/// ふだん使っている設定（最後に開いた vault など）を書き換えないようにする
+enum AppDefaults {
+    nonisolated(unsafe) static let shared: UserDefaults =
+        ProcessInfo.processInfo.environment["MA_DEFAULTS_SUITE"].flatMap { UserDefaults(suiteName: $0) } ?? .standard
+}
+
 /// エディタに渡す開いているノート
 struct OpenDocument {
     let url: URL
@@ -38,7 +45,7 @@ final class Vault {
     private static let lastRootKey = "lastRoot"
 
     func restoreLastRoot() {
-        if let path = UserDefaults.standard.string(forKey: Self.lastRootKey),
+        if let path = AppDefaults.shared.string(forKey: Self.lastRootKey),
            FileManager.default.fileExists(atPath: path) {
             setRoot(URL(fileURLWithPath: path, isDirectory: true))
         }
@@ -54,14 +61,15 @@ final class Vault {
         setRoot(url)
     }
 
-    func setRoot(_ url: URL) {
+    /// `remember` が false のときは、次回の起動で開く vault として記録しない（vault の外のファイルを開いたときなど）
+    func setRoot(_ url: URL, remember: Bool = true) {
         saveNow()
         root = url
         tree = []
         document = nil
         onTreeChange?()
         onDocumentChange?()
-        UserDefaults.standard.set(url.path, forKey: Self.lastRootKey)
+        if remember { AppDefaults.shared.set(url.path, forKey: Self.lastRootKey) }
         Task {
             let scanned = await Task.detached { Self.scan(url) }.value
             guard root == url else { return }

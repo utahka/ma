@@ -3,6 +3,21 @@ import AppKit
 extension NSAttributedString.Key {
     /// 段落の先頭に付け、レイアウトフラグメントに描かせる装飾を渡す
     static let maBlock = NSAttributedString.Key("ma.block")
+    /// タスクの `[ ]` に付ける。値はチェック済みかどうか
+    static let maCheckbox = NSAttributedString.Key("ma.checkbox")
+    /// 文字を透明にして、代わりに描く記号（箇条書きの中黒や <br> の ↵）
+    static let maReplacement = NSAttributedString.Key("ma.replacement")
+}
+
+/// 文字の代わりに、その文字の位置の中央へ描く記号
+final class Replacement: NSObject, @unchecked Sendable {
+    let symbol: String
+    let color: NSColor
+
+    init(_ symbol: String, color: NSColor) {
+        self.symbol = symbol
+        self.color = color
+    }
 }
 
 /// 引用とコールアウトの枠
@@ -72,13 +87,41 @@ final class TableLayout: NSObject, @unchecked Sendable {
     let alignments: [NSTextAlignment]
     /// 区切り行（|---|）の範囲。ドラッグを終えたらここを書き換えて幅を保存する
     let separatorRange: NSRange
+    /// 見出し行と本文の各行の、セルの範囲（縦棒の間）。区切り行は含まない
+    let rows: [[NSRange]]
     let tableRange: NSRange
 
-    init(columnWidths: [CGFloat], alignments: [NSTextAlignment], separatorRange: NSRange, tableRange: NSRange) {
+    init(columnWidths: [CGFloat], alignments: [NSTextAlignment], separatorRange: NSRange, rows: [[NSRange]],
+         tableRange: NSRange) {
         self.columnWidths = columnWidths
         self.alignments = alignments
         self.separatorRange = separatorRange
+        self.rows = rows
         self.tableRange = tableRange
+    }
+
+    /// 最終行の末尾（改行の手前）。行を追加するときはここに挿入する
+    var endOfLastRow: Int {
+        var end = NSMaxRange(tableRange)
+        if let last = rows.last?.last { end = max(NSMaxRange(last), end - 1) }
+        return end
+    }
+
+    /// `location` を含むセルの位置
+    func cell(containing location: Int) -> (row: Int, column: Int)? {
+        for (row, cells) in rows.enumerated() {
+            for (column, cell) in cells.enumerated() where cell.location <= location && location <= NSMaxRange(cell) {
+                return (row, column)
+            }
+        }
+        return nil
+    }
+
+    /// 区切り行に保存できる幅（1文字 8pt 刻み）に丸める。ドラッグ中から丸めておくと、離したときに幅が跳ねない
+    static func snapped(_ width: CGFloat) -> CGFloat {
+        let padding = TableRowDecoration.cellPadding * 2
+        let length = max(3, ((width - padding) / dashWidth).rounded())
+        return max(minimumWidth, length * dashWidth + padding)
     }
 
     /// 列幅の合計が本文の幅を超えるときは、比率を保って縮める
@@ -89,12 +132,27 @@ final class TableLayout: NSObject, @unchecked Sendable {
 
     /// 現在の列幅を `-` の数に直した区切り行
     func separatorLine() -> String {
-        let cells = columnWidths.enumerated().map { column, width -> String in
-            let count = max(3, Int(((width - TableRowDecoration.cellPadding * 2) / Self.dashWidth).rounded()))
+        let colons = columnWidths.indices.map { column -> Int in
             switch column < alignments.count ? alignments[column] : .left {
-            case .center: return ":" + String(repeating: "-", count: count - 2) + ":"
-            case .right: return String(repeating: "-", count: count - 1) + ":"
-            default: return String(repeating: "-", count: count)
+            case .center: return 2
+            case .right: return 1
+            default: return 0
+            }
+        }
+        var dashes = columnWidths.enumerated().map { column, width -> Int in
+            let length = Int(((width - TableRowDecoration.cellPadding * 2) / Self.dashWidth).rounded())
+            return max(3, length - colons[column])
+        }
+        // どの列も `-` が 3 本以下だと自動幅として読まれるので、いちばん広い列を 4 本にする
+        if !dashes.contains(where: { $0 > 3 }), let widest = columnWidths.indices.max(by: { columnWidths[$0] < columnWidths[$1] }) {
+            dashes[widest] = 4
+        }
+        let cells = dashes.enumerated().map { column, count -> String in
+            let body = String(repeating: "-", count: count)
+            switch colons[column] {
+            case 2: return ":" + body + ":"
+            case 1: return body + ":"
+            default: return body
             }
         }
         return "| " + cells.joined(separator: " | ") + " |"
@@ -110,15 +168,19 @@ final class TableRowDecoration: NSObject, @unchecked Sendable {
     static let cellPadding: CGFloat = 10
     static let rowHeight: CGFloat = 30
 
+    /// 行の上下の余白。1行の行では文字が縦中央に来る
+    static var verticalPadding: CGFloat { (rowHeight - (bodyFont.ascender - bodyFont.descender)) / 2 }
+
     let kind: Kind
-    let cells: [String]
     let layout: TableLayout
     let isLast: Bool
+    /// セル内の改行や折り返しがある行で、フラグメントが描くセルの文字。nil なら元の文字をそのまま見せている
+    let cellTexts: [NSAttributedString]?
 
-    init(kind: Kind, cells: [String], layout: TableLayout, isLast: Bool) {
+    init(kind: Kind, layout: TableLayout, isLast: Bool, cellTexts: [NSAttributedString]? = nil) {
         self.kind = kind
-        self.cells = cells
         self.layout = layout
+        self.cellTexts = cellTexts
         self.isLast = isLast
     }
 }
@@ -177,10 +239,82 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
             drawBox(box, at: point)
             super.draw(at: point, in: context)
             drawBoxHeader(box, at: point)
+            drawCheckboxes(at: point)
         case let row as TableRowDecoration:
+            // 罫線と背景を先に描き、セルの文字（元の Markdown の文字）はその上に通常どおり描く
             drawTableRow(row, at: point)
+            super.draw(at: point, in: context)
+            drawCheckboxes(at: point)
         default:
             super.draw(at: point, in: context)
+            drawCheckboxes(at: point)
+        }
+    }
+
+    // MARK: - 記号の差し替えとチェックボックス
+
+    private func drawReplacements(at point: CGPoint) {
+        for line in textLineFragments {
+            line.attributedString.enumerateAttribute(.maReplacement, in: line.characterRange) { value, range, _ in
+                guard let replacement = value as? Replacement else { return }
+                let font = line.attributedString.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+                    ?? NSFont.systemFont(ofSize: 15)
+                let symbol = NSAttributedString(string: replacement.symbol, attributes: [
+                    .font: font, .foregroundColor: replacement.color,
+                ])
+                let start = line.locationForCharacter(at: range.location).x
+                let end = line.locationForCharacter(at: NSMaxRange(range)).x
+                let bounds = line.typographicBounds
+                let baselineOffset = line.attributedString.attribute(.baselineOffset, at: range.location, effectiveRange: nil) as? CGFloat ?? 0
+                // ベースラインを元の文字に揃え、横は元の文字の中央に置く
+                let baseline = point.y + bounds.minY + line.glyphOrigin.y - baselineOffset
+                symbol.draw(at: CGPoint(x: point.x + bounds.minX + (start + end - symbol.size().width) / 2,
+                                        y: baseline - font.ascender))
+            }
+        }
+    }
+
+    /// 段落内のチェックボックスの位置（フラグメント内の座標）と、段落内の文字範囲
+    func checkboxes() -> [(rect: CGRect, range: NSRange, checked: Bool)] {
+        var result: [(CGRect, NSRange, Bool)] = []
+        for line in textLineFragments {
+            line.attributedString.enumerateAttribute(.maCheckbox, in: line.characterRange) { value, range, _ in
+                guard let checked = value as? Bool else { return }
+                let start = line.locationForCharacter(at: range.location).x
+                let end = line.locationForCharacter(at: NSMaxRange(range)).x
+                let bounds = line.typographicBounds
+                // 文字の縦中央はベースラインから大文字の高さの半分だけ上
+                let centerY = bounds.minY + line.glyphOrigin.y - NSFont.systemFont(ofSize: 15).capHeight / 2
+                let size: CGFloat = 14
+                let rect = CGRect(x: bounds.minX + (start + end - size) / 2, y: centerY - size / 2, width: size, height: size)
+                result.append((rect, range, checked))
+            }
+        }
+        return result
+    }
+
+    private func drawCheckboxes(at point: CGPoint) {
+        drawReplacements(at: point)
+        for (rect, _, checked) in checkboxes() {
+            let box = rect.offsetBy(dx: point.x, dy: point.y)
+            let path = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5), xRadius: 3.5, yRadius: 3.5)
+            if checked {
+                NSColor.controlAccentColor.setFill()
+                path.fill()
+                let check = NSBezierPath()
+                check.move(to: CGPoint(x: box.minX + 3.5, y: box.midY))
+                check.line(to: CGPoint(x: box.minX + 6, y: box.maxY - 3.5))
+                check.line(to: CGPoint(x: box.maxX - 3, y: box.minY + 3.5))
+                check.lineWidth = 1.8
+                check.lineCapStyle = .round
+                check.lineJoinStyle = .round
+                NSColor.white.setStroke()
+                check.stroke()
+            } else {
+                path.lineWidth = 1.2
+                NSColor.secondaryLabelColor.setStroke()
+                path.stroke()
+            }
         }
     }
 
@@ -264,23 +398,18 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
         NSColor.separatorColor.setStroke()
         grid.stroke()
 
-        let font = row.kind == .header ? TableRowDecoration.headerFont : TableRowDecoration.bodyFont
-        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        guard let texts = row.cellTexts else { return }
+        let padding = TableRowDecoration.cellPadding
+        let vertical = TableRowDecoration.verticalPadding
         var x = left
         for (column, width) in widths.enumerated() {
             defer { x += width }
-            guard column < row.cells.count else { continue }
-            let style = NSMutableParagraphStyle()
-            style.alignment = column < row.layout.alignments.count ? row.layout.alignments[column] : .left
-            style.lineBreakMode = .byTruncatingTail
-            let cell = NSAttributedString(string: row.cells[column], attributes: [
-                .font: font, .foregroundColor: NSColor.textColor, .paragraphStyle: style,
-            ])
-            let padding = TableRowDecoration.cellPadding
-            cell.draw(
-                with: CGRect(x: x + padding, y: point.y + (height - lineHeight) / 2,
-                             width: max(0, width - padding * 2), height: lineHeight),
-                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine]
+            guard column < texts.count else { continue }
+            texts[column].draw(
+                // 高さは余裕を持たせる。収まりきらない最後の行は描かれないため
+                with: CGRect(x: x + padding, y: point.y + vertical, width: max(1, width - padding * 2),
+                             height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
             )
         }
     }

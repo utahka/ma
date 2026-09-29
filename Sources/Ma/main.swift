@@ -59,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let root = vault.root, url.path.hasPrefix(root.path + "/") {
             vault.open(url)
         } else {
-            vault.setRoot(url.deletingLastPathComponent())
+            vault.setRoot(url.deletingLastPathComponent(), remember: false)
             vault.open(url)
         }
         window.makeKeyAndOrderFront(nil)
@@ -104,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(submenu: edit, title: "編集")
 
         let view = NSMenu(title: "表示")
+        view.addItem(withTitle: "ソース表示", action: #selector(EditorViewController.toggleSourceMode(_:)), keyEquivalent: "e")
         let toggle = view.addItem(withTitle: "サイドバーを切り替え", action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "s")
         toggle.keyEquivalentModifierMask = [.command, .control]
         main.addItem(submenu: view, title: "表示")

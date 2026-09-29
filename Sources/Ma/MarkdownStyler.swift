@@ -28,12 +28,7 @@ struct MarkdownStyler {
     private let calloutHeader = Self.regex(#"^>[ \t]?\[!([A-Za-z-]+)\]([+-])?[ \t]*(.*)$"#)
     private let tableRow = Self.regex(#"^[ \t]*\|"#)
     private let tableSeparator = Self.regex(#"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$"#)
-    private let cellReplacements: [(NSRegularExpression, String)] = [
-        (Self.regex(#"\[\[[^\]|]+\|([^\]]+)\]\]"#), "$1"),
-        (Self.regex(#"\[\[([^\]]+)\]\]"#), "$1"),
-        (Self.regex(#"\[([^\]]+)\]\([^)]+\)"#), "$1"),
-        (Self.regex(#"\*\*|__|~~|`"#), ""),
-    ]
+    private let lineBreakTag = Self.regex(#"<br\s*/?>"#, options: [.caseInsensitive])
 
     private struct Line {
         let full: NSRange
@@ -44,12 +39,20 @@ struct MarkdownStyler {
         [.font: bodyFont, .foregroundColor: NSColor.textColor, .paragraphStyle: paragraphStyle]
     }
 
-    func apply(to storage: NSTextStorage, activeRange: NSRange) {
+    /// 装飾をかけ直し、文書中の表を返す。`availableWidth` は本文の幅で、表が収まらないときの縮小に使う。
+    /// `sourceMode` では装飾を外し、等幅フォントで Markdown をそのまま見せる
+    @discardableResult
+    func apply(to storage: NSTextStorage, activeRange: NSRange, availableWidth: CGFloat, sourceMode: Bool) -> [TableLayout] {
         let text = storage.string
         let string = text as NSString
         storage.beginEditing()
         defer { storage.endEditing() }
-        storage.setAttributes(baseAttributes, range: NSRange(location: 0, length: string.length))
+        let whole = NSRange(location: 0, length: string.length)
+        storage.setAttributes(baseAttributes, range: whole)
+        if sourceMode {
+            storage.addAttribute(.font, value: monoFont, range: whole)
+            return []
+        }
 
         var lines: [Line] = []
         var position = 0
@@ -60,6 +63,7 @@ struct MarkdownStyler {
         }
         func isActive(_ range: NSRange) -> Bool { NSIntersectionRange(range, activeRange).length > 0 }
 
+        var tables: [TableLayout] = []
         var inFence = false
         var index = 0
         while index < lines.count {
@@ -79,11 +83,7 @@ struct MarkdownStyler {
             }
             if let end = tableEnd(from: index, in: lines, text: text) {
                 let block = Array(lines[index..<end])
-                if isActive(block.first!.full.union(block.last!.full)) {
-                    styleRawTable(block, text: text, in: storage)
-                } else {
-                    styleRenderedTable(block, text: text, in: storage)
-                }
+                tables.append(styleTable(block, text: text, in: storage, availableWidth: availableWidth, isActive: isActive))
                 index = end
                 continue
             }
@@ -99,6 +99,7 @@ struct MarkdownStyler {
             styleInline(text, line: line.content, in: storage, active: active)
             index += 1
         }
+        return tables
     }
 
     // MARK: - 表
@@ -114,106 +115,221 @@ struct MarkdownStyler {
         return end
     }
 
-    /// カーソルが表の中にあるときは、ソースを等幅で表示する
-    private func styleRawTable(_ block: [Line], text: String, in storage: NSTextStorage) {
-        for line in block {
-            storage.addAttribute(.font, value: monoFont, range: line.content)
-        }
-        storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: block[1].content)
-    }
-
-    /// カーソルが表の外にあるときは、ソースを透明にして、レイアウトフラグメントに罫線とセルを描かせる
-    private func styleRenderedTable(_ block: [Line], text: String, in storage: NSTextStorage) {
+    /// 表を、元の文字のまま表の形に並べる。縦棒とセルの前後の空白は幅ゼロにして隠し、
+    /// 字間（kern）を足して各セルの文字を列の位置まで送る。罫線と見出しの背景はレイアウトフラグメントが描く。
+    /// 文字を描き直さないので、カーソルを入れても表の形のまま通常のテキストとして編集できる
+    private func styleTable(
+        _ block: [Line], text: String, in storage: NSTextStorage, availableWidth: CGFloat, isActive: (NSRange) -> Bool
+    ) -> TableLayout {
         let string = text as NSString
-        let rows = block.map { tableCells(string.substring(with: $0.content)) }
-        let alignments = rows[1].map { cell -> NSTextAlignment in
-            let separator = cell.trimmingCharacters(in: .whitespaces)
-            switch (separator.hasPrefix(":"), separator.hasSuffix(":")) {
+        let padding = TableRowDecoration.cellPadding
+        let separatorCells = tableSegments(block[1].content, in: string).map { string.substring(with: $0).trimmingCharacters(in: .whitespaces) }
+        let alignments = separatorCells.map { cell -> NSTextAlignment in
+            switch (cell.hasPrefix(":"), cell.hasSuffix(":")) {
             case (true, true): return .center
             case (false, true): return .right
             default: return .left
             }
         }
-        let columnCount = rows[0].count
+        // 見出し行と本文の行。区切り行（index 1）は含めない
+        let rows = block.enumerated().filter { $0.offset != 1 }.map { offset, line in
+            (line: line, isHeader: offset == 0, cells: tableSegments(line.content, in: string))
+        }
+        let columnCount = rows[0].cells.count
+
+        // 1. 文字の装飾。セルの中身だけを見せ、縦棒と前後の空白は幅ゼロにする
+        var textRanges: [[NSRange]] = []
+        for row in rows {
+            let active = isActive(row.line.full)
+            storage.addAttribute(.font, value: row.isHeader ? TableRowDecoration.headerFont : TableRowDecoration.bodyFont, range: row.line.content)
+            let cells = row.cells.map { trimmed($0, in: string) }
+            textRanges.append(cells)
+            var visible = IndexSet()
+            for (column, cell) in cells.enumerated() where cell.length > 0 {
+                if column < columnCount { visible.insert(integersIn: cell.location..<NSMaxRange(cell)) }
+                styleInline(text, line: cell, in: storage, active: active)
+                // <br> はセル内の改行として「↵」で示す
+                for match in lineBreakTag.matches(in: text, range: cell) {
+                    let last = NSRange(location: NSMaxRange(match.range) - 1, length: 1)
+                    storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear],
+                                          range: NSRange(location: match.range.location, length: match.range.length - 1))
+                    // 「>」より幅のある「↵」が隣の文字に重ならないよう、字間で幅を足す
+                    storage.addAttributes([.foregroundColor: NSColor.clear, .kern: 8,
+                                           .maReplacement: Replacement("↵", color: .tertiaryLabelColor)], range: last)
+                }
+            }
+            for index in row.line.content.location..<NSMaxRange(row.line.content) where !visible.contains(index) {
+                storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear], range: NSRange(location: index, length: 1))
+            }
+        }
+        storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear], range: block[1].full)
+
+        // 2. 列幅。区切り行に `-` が 4 本以上ある列があれば幅の指定ありとみなし、なければ中身に合わせる
+        let measured = textRanges.map { row in
+            row.map { $0.length > 0 ? ceil(storage.attributedSubstring(from: $0).size().width) : 0 }
+        }
         var widths = [CGFloat](repeating: 48, count: columnCount)
-        // 揃えの `:` も含めた文字数を数える（書き出す側も `:` を含めた文字数で幅を表す）
-        let dashCounts = rows[1].map { $0.trimmingCharacters(in: .whitespaces).count }
-        if dashCounts.contains(where: { $0 > 3 }) {
-            // 区切り行の `-` が 4 本以上ある列があれば、`-` の数を列幅として使う（ドラッグで変えた幅もここに保存される）
-            for column in 0..<min(columnCount, dashCounts.count) {
-                widths[column] = max(
-                    TableLayout.minimumWidth,
-                    CGFloat(dashCounts[column]) * TableLayout.dashWidth + TableRowDecoration.cellPadding * 2
-                )
+        if separatorCells.contains(where: { $0.filter { $0 == "-" }.count > 3 }) {
+            // 幅は揃えの `:` も含めた文字数で表す（ドラッグで変えた幅もこの形で保存される）
+            for (column, cell) in separatorCells.prefix(columnCount).enumerated() {
+                widths[column] = max(TableLayout.minimumWidth, CGFloat(cell.count) * TableLayout.dashWidth + padding * 2)
             }
         } else {
-            for (rowIndex, row) in rows.enumerated() where rowIndex != 1 {
-                let font = rowIndex == 0 ? TableRowDecoration.headerFont : TableRowDecoration.bodyFont
-                for (column, cell) in row.prefix(columnCount).enumerated() {
-                    let width = (plainText(cell) as NSString).size(withAttributes: [.font: font]).width
-                    widths[column] = max(widths[column], ceil(width) + TableRowDecoration.cellPadding * 2)
+            // 自動幅は、<br> で区切った各行のうち最も長い行に合わせる
+            for row in textRanges {
+                for (column, content) in row.prefix(columnCount).enumerated() where content.length > 0 {
+                    widths[column] = max(widths[column], widestLine(content, in: storage, text: text) + padding * 2)
                 }
             }
         }
         let layout = TableLayout(
-            columnWidths: widths, alignments: alignments,
-            separatorRange: block[1].content, tableRange: block.first!.full.union(block.last!.full)
+            columnWidths: widths, alignments: alignments, separatorRange: block[1].content,
+            rows: rows.map { $0.cells }, tableRange: block.first!.full.union(block.last!.full)
         )
+        let drawn = layout.scaledWidths(available: availableWidth).widths
 
-        for (rowIndex, line) in block.enumerated() {
+        // 3. 字間でセルの文字を列の位置へ送る
+        let font = TableRowDecoration.bodyFont
+        // 日本語の文字はベースラインの下に深く入るので、計算上の中央より 1pt 上げる
+        let lift = (TableRowDecoration.rowHeight - (font.ascender - font.descender)) / 2 + 1
+        for (rowIndex, row) in rows.enumerated() {
+            var kerns: [Int: CGFloat] = [:]
+            var indent: CGFloat = 0
+            let lineStart = row.line.content.location
+            for column in 0..<min(columnCount, row.cells.count) {
+                let cell = row.cells[column]
+                let content = textRanges[rowIndex][column]
+                let width = measured[rowIndex][column]
+                let left: CGFloat
+                switch column < alignments.count ? alignments[column] : .left {
+                case .center: left = max(0, (drawn[column] - width) / 2)
+                case .right: left = max(0, drawn[column] - padding - width)
+                default: left = padding
+                }
+                let right = max(0, drawn[column] - left - width)
+                // 左の余白はセルの文字の直前の文字（隠した縦棒か空白）に、右の余白はセルの最後の文字に足す
+                if content.location > lineStart { kerns[content.location - 1, default: 0] += left } else { indent += left }
+                let last = cell.length > 0 ? NSMaxRange(cell) - 1 : content.location - 1
+                if last >= lineStart { kerns[last, default: 0] += right }
+            }
+            // カーソルのない行で、<br> や列幅に収まらない文字があるセルがあれば、フラグメントが改行・折り返して描く。
+            // カーソルのある行は、元の文字を1行に並べたまま編集させる
+            var cellTexts: [NSAttributedString]?
+            var height = TableRowDecoration.rowHeight
+            let wraps = (0..<min(columnCount, row.cells.count)).contains { column in
+                let content = textRanges[rowIndex][column]
+                return content.length > 0 && (lineBreakTag.firstMatch(in: text, range: content) != nil
+                    || measured[rowIndex][column] > drawn[column] - padding * 2)
+            }
+            if !isActive(row.line.full) && wraps {
+                let texts = (0..<columnCount).map { column -> NSAttributedString in
+                    guard column < textRanges[rowIndex].count, textRanges[rowIndex][column].length > 0 else { return NSAttributedString() }
+                    return cellText(textRanges[rowIndex][column], alignment: column < alignments.count ? alignments[column] : .left,
+                                    in: storage, text: text)
+                }
+                let tallest = texts.enumerated().map { column, cell in
+                    cell.boundingRect(with: CGSize(width: max(1, drawn[column] - padding * 2), height: .greatestFiniteMagnitude),
+                                      options: [.usesLineFragmentOrigin, .usesFontLeading]).height
+                }.max() ?? 0
+                // 折り返した文字の計測値は描いた高さより少し小さく出るので、下の余白を上と揃えるために足す
+                height = max(height, ceil(tallest) + TableRowDecoration.verticalPadding * 2 + 4)
+                cellTexts = texts
+                storage.addAttribute(.foregroundColor, value: NSColor.clear, range: row.line.content)
+                storage.removeAttribute(.maReplacement, range: row.line.content)
+            }
+            for (index, kern) in kerns {
+                storage.addAttribute(.kern, value: kern, range: NSRange(location: index, length: 1))
+            }
             let style = NSMutableParagraphStyle()
             style.lineBreakMode = .byClipping
-            let kind: TableRowDecoration.Kind
-            if rowIndex == 1 {
-                kind = .separator
-                style.minimumLineHeight = 0.01
-                style.maximumLineHeight = 0.01
-                storage.addAttribute(.font, value: hiddenFont, range: line.full)
-            } else {
-                kind = rowIndex == 0 ? .header : .body
-                style.minimumLineHeight = TableRowDecoration.rowHeight
-                style.maximumLineHeight = TableRowDecoration.rowHeight
-            }
-            let cells = rows[rowIndex].map(plainText)
+            style.minimumLineHeight = height
+            style.maximumLineHeight = height
+            style.firstLineHeadIndent = indent
             storage.addAttributes([
-                .foregroundColor: NSColor.clear,
                 .paragraphStyle: style,
-                .maBlock: TableRowDecoration(kind: kind, cells: cells, layout: layout, isLast: rowIndex == block.count - 1),
-            ], range: line.full)
+                // 行高を固定すると余りは文字の上に入るので、ベースラインを上げて縦中央に置く
+                .baselineOffset: lift,
+                .maBlock: TableRowDecoration(kind: row.isHeader ? .header : .body, layout: layout,
+                                             isLast: rowIndex == rows.count - 1, cellTexts: cellTexts),
+            ], range: row.line.full)
         }
+        let separatorStyle = NSMutableParagraphStyle()
+        separatorStyle.minimumLineHeight = 0.01
+        separatorStyle.maximumLineHeight = 0.01
+        storage.addAttributes([
+            .paragraphStyle: separatorStyle,
+            .maBlock: TableRowDecoration(kind: .separator, layout: layout, isLast: false),
+        ], range: block[1].full)
+        return layout
     }
 
-    /// `| a | b |` をセルに分ける。`\|` はセル内の縦棒として扱う
-    private func tableCells(_ row: String) -> [String] {
-        var body = Substring(row.trimmingCharacters(in: .whitespaces))
-        if body.hasPrefix("|") { body = body.dropFirst() }
-        if body.hasSuffix("|") && !body.hasSuffix("\\|") { body = body.dropLast() }
-        var cells: [String] = []
-        var current = ""
-        var previous: Character?
-        for character in body {
-            if character == "|" && previous != "\\" {
-                cells.append(current)
-                current = ""
-            } else {
-                current.append(character)
+    /// セルの文字を <br> で区切ったときの、最も長い行の幅
+    private func widestLine(_ range: NSRange, in storage: NSTextStorage, text: String) -> CGFloat {
+        var widest: CGFloat = 0
+        var start = range.location
+        for match in lineBreakTag.matches(in: text, range: range) + [nil] {
+            let end = match?.range.location ?? NSMaxRange(range)
+            if end > start {
+                widest = max(widest, ceil(storage.attributedSubstring(from: NSRange(location: start, length: end - start)).size().width))
             }
-            previous = character
+            if let match { start = NSMaxRange(match.range) }
         }
-        cells.append(current)
-        return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+        return widest
     }
 
-    /// セル内の簡単な記法を外して表示用の文字列にする
-    private func plainText(_ cell: String) -> String {
-        var result = cell.replacingOccurrences(of: "\\|", with: "|")
-        for (regex, template) in cellReplacements {
-            result = regex.stringByReplacingMatches(
-                in: result, range: NSRange(location: 0, length: (result as NSString).length), withTemplate: template
+    /// フラグメントが描くセルの文字。装飾済みの文字をもとに、<br> を改行に置き換える
+    private func cellText(_ range: NSRange, alignment: NSTextAlignment, in storage: NSTextStorage, text: String) -> NSAttributedString {
+        let result = NSMutableAttributedString(attributedString: storage.attributedSubstring(from: range))
+        for key: NSAttributedString.Key in [.kern, .maReplacement, .baselineOffset, .paragraphStyle] {
+            result.removeAttribute(key, range: NSRange(location: 0, length: result.length))
+        }
+        // 改行文字は本文の文字の大きさにする（置き換える前の「<br>」は隠すために極小のフォントになっている）
+        for match in lineBreakTag.matches(in: text, range: range).reversed() {
+            result.replaceCharacters(
+                in: NSRange(location: match.range.location - range.location, length: match.range.length),
+                with: NSAttributedString(string: "\n", attributes: [.font: TableRowDecoration.bodyFont])
             )
         }
+        let style = NSMutableParagraphStyle()
+        style.alignment = alignment
+        style.lineSpacing = 2
+        result.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: result.length))
         return result
     }
+
+    /// 行をセルに分け、各セルの範囲（縦棒の間。前後の空白を含む）を返す。`\|` はセル内の縦棒として扱う
+    private func tableSegments(_ content: NSRange, in string: NSString) -> [NSRange] {
+        let end = NSMaxRange(content)
+        var index = content.location
+        while index < end, isBlank(string.character(at: index)) { index += 1 }
+        if index < end, string.character(at: index) == 0x7C { index += 1 }
+        var segments: [NSRange] = []
+        var start = index
+        while index < end {
+            let character = string.character(at: index)
+            if character == 0x5C { index += 2; continue }
+            if character == 0x7C {
+                segments.append(NSRange(location: start, length: index - start))
+                start = index + 1
+            }
+            index += 1
+        }
+        let tail = NSRange(location: start, length: max(0, end - start))
+        if trimmed(tail, in: string).length > 0 { segments.append(tail) }
+        return segments
+    }
+
+    /// セルの前後の空白を除いた範囲。空のセルは、縦棒の直後の空白の後ろ（入力が入る位置）を長さ 0 で返す
+    private func trimmed(_ range: NSRange, in string: NSString) -> NSRange {
+        var start = range.location
+        var end = NSMaxRange(range)
+        while start < end, isBlank(string.character(at: start)) { start += 1 }
+        while end > start, isBlank(string.character(at: end - 1)) { end -= 1 }
+        if start == end { return NSRange(location: range.location + min(1, range.length), length: 0) }
+        return NSRange(location: start, length: end - start)
+    }
+
+    private func isBlank(_ character: unichar) -> Bool { character == 0x20 || character == 0x09 }
 
     // MARK: - 引用とコールアウト
 
@@ -242,7 +358,7 @@ struct MarkdownStyler {
             style.minimumLineHeight = 24
             // 枠の内側の上下の余白。段落の前後の間隔もフラグメントに含まれ、背景が塗られる
             if isFirst && callout != nil { style.paragraphSpacingBefore = 4 }
-            if isLast && callout != nil { style.paragraphSpacing = 6 }
+            if isLast && callout != nil { style.paragraphSpacing = 12 }
 
             if let header, isFirst, let callout {
                 let title = header.range(at: 3)
@@ -299,9 +415,29 @@ struct MarkdownStyler {
         } else if rule.firstMatch(in: text, range: line) != nil {
             storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: line)
         } else if let match = listMarker.firstMatch(in: text, range: line) {
-            storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: match.range(at: 1))
-            if match.range(at: 2).location != NSNotFound {
-                storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: match.range(at: 2))
+            let checkbox = match.range(at: 2)
+            guard checkbox.location != NSNotFound else {
+                let bullet = match.range(at: 1)
+                if bullet.length == 1 {
+                    // `-` `*` `+` は中黒で表示する
+                    storage.addAttributes([.foregroundColor: NSColor.clear,
+                                           .maReplacement: Replacement("・", color: .secondaryLabelColor)], range: bullet)
+                } else {
+                    storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: bullet)
+                }
+                return
+            }
+            // タスクは箇条書きの記号を隠し、`[ ]` を透明にしてその位置にチェックボックスを描く
+            marker(match.range(at: 1), in: storage, active: active)
+            let brackets = NSRange(location: checkbox.location, length: 3)
+            let checked = (text as NSString).character(at: brackets.location + 1) != 0x20
+            storage.addAttributes([.foregroundColor: NSColor.clear, .maCheckbox: checked], range: brackets)
+            if checked {
+                let rest = NSRange(location: NSMaxRange(checkbox), length: NSMaxRange(line) - NSMaxRange(checkbox))
+                storage.addAttributes([
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                ], range: rest)
             }
         }
     }
@@ -384,7 +520,7 @@ struct MarkdownStyler {
         return NSRange(location: lineRange.location, length: end - lineRange.location)
     }
 
-    private static func regex(_ pattern: String) -> NSRegularExpression {
-        try! NSRegularExpression(pattern: pattern)
+    private static func regex(_ pattern: String, options: NSRegularExpression.Options = []) -> NSRegularExpression {
+        try! NSRegularExpression(pattern: pattern, options: options)
     }
 }
