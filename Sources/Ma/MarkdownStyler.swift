@@ -35,6 +35,8 @@ struct MarkdownStyler {
     private let wikiLink = Self.regex(#"\[\[([^\]|\n]+)(\|[^\]\n]+)?\]\]"#)
     private let link = Self.regex(#"\[([^\]\n]+)\]\(([^)\n]+)\)"#)
     private let calloutHeader = Self.regex(#"^>[ \t]?\[!([A-Za-z-]+)\]([+-])?[ \t]*(.*)$"#)
+    /// コールアウトのタイトルの先頭の `[ ]` `[-]` `[x]`。1 は括弧の中の文字
+    private let calloutTitleCheckbox = Self.regex(#"^\[([ xX-])\](?=[ \t]|$)"#)
     private let tableRow = Self.regex(#"^[ \t]*\|"#)
     private let tableSeparator = Self.regex(#"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$"#)
     private let lineBreakTag = Self.regex(#"<br\s*/?>"#, options: [.caseInsensitive])
@@ -482,6 +484,7 @@ struct MarkdownStyler {
                     .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
                     .foregroundColor: callout.color,
                 ], range: title)
+                styleCalloutTitleCheckbox(title, text: text, color: callout.color, in: storage, active: active)
                 styleInline(text, line: title, in: storage, active: active)
                 let fallback = title.length == 0 && !active ? callout.defaultTitle : nil
                 storage.addAttributes([
@@ -518,6 +521,36 @@ struct MarkdownStyler {
                 } ?? BoxDecoration.quote(isFirst: isFirst, isLast: isLast),
             ], range: line.full)
         }
+    }
+
+    /// タイトルの先頭の `[ ]` `[-]` `[x]` をチェックボックスにする。完了はタイトルを薄くして打ち消し線を引く。
+    /// カーソル行はチェックリストと同じく記号をそのまま見せる
+    private func styleCalloutTitleCheckbox(_ title: NSRange, text: String, color: NSColor, in storage: NSTextStorage, active: Bool) {
+        guard let match = calloutTitleCheckbox.firstMatch(in: text, range: title),
+              let state = CheckboxState(mark: Character((text as NSString).substring(with: match.range(at: 1))))
+        else { return }
+        let brackets = match.range
+        if active {
+            marker(brackets, in: storage, active: true)
+        } else {
+            hideCheckboxBrackets(brackets, state: state, in: storage)
+        }
+        if state == .done {
+            let rest = NSRange(location: NSMaxRange(brackets), length: NSMaxRange(title) - NSMaxRange(brackets))
+            storage.addAttributes([
+                .foregroundColor: color.withAlphaComponent(0.5),
+                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+            ], range: rest)
+        }
+    }
+
+    /// `[ ]` を透明にして `.maCheckbox` を付け、フラグメントにチェックボックスを描かせる。
+    /// 本文のフォントのままだと `[` `]` にヒラギノが割り当てられ（日本語環境の約物の扱い）、その行だけ約 6pt 高くなる。
+    /// 透明で見えない文字なので置き換えの起きないフォントにし、幅はチェックボックスに合わせる
+    private func hideCheckboxBrackets(_ brackets: NSRange, state: CheckboxState, in storage: NSTextStorage) {
+        let bracketWidth = "[ ]".size(withAttributes: [.font: checkboxFont]).width
+        storage.addAttributes([.foregroundColor: NSColor.clear, .maCheckbox: state.rawValue, .font: checkboxFont], range: brackets)
+        storage.addAttribute(.kern, value: 14 - bracketWidth, range: NSRange(location: NSMaxRange(brackets) - 1, length: 1))
     }
 
     private func styleBlock(_ text: String, line: NSRange, in storage: NSTextStorage, active: Bool) {
@@ -578,11 +611,7 @@ struct MarkdownStyler {
             if active {
                 marker(brackets, in: storage, active: true)
             } else {
-                // 本文のフォントのままだと `[` `]` にヒラギノが割り当てられ（日本語環境の約物の扱い）、その行だけ約 6pt 高くなる。
-                // 透明で見えない文字なので置き換えの起きないフォントにし、幅はチェックボックスに合わせる
-                let bracketWidth = "[ ]".size(withAttributes: [.font: checkboxFont]).width
-                storage.addAttributes([.foregroundColor: NSColor.clear, .maCheckbox: checked, .font: checkboxFont], range: brackets)
-                storage.addAttribute(.kern, value: 14 - bracketWidth, range: NSRange(location: NSMaxRange(brackets) - 1, length: 1))
+                hideCheckboxBrackets(brackets, state: checked ? .done : .open, in: storage)
             }
             if checked {
                 let rest = NSRange(location: NSMaxRange(checkbox), length: NSMaxRange(line) - NSMaxRange(checkbox))

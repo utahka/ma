@@ -3,7 +3,7 @@ import AppKit
 extension NSAttributedString.Key {
     /// 段落の先頭に付け、レイアウトフラグメントに描かせる装飾を渡す
     static let maBlock = NSAttributedString.Key("ma.block")
-    /// タスクの `[ ]` に付ける。値はチェック済みかどうか
+    /// タスクやコールアウトのタイトルの `[ ]` に付ける。値は `CheckboxState` の rawValue
     static let maCheckbox = NSAttributedString.Key("ma.checkbox")
     /// 文字を透明にして、代わりに描く記号（箇条書きの中黒や <br> の ↵）
     static let maReplacement = NSAttributedString.Key("ma.replacement")
@@ -11,6 +11,25 @@ extension NSAttributedString.Key {
     static let maWikiLink = NSAttributedString.Key("ma.wikiLink")
     /// `[表示名](URL)` 全体に付ける。値は URL の文字列
     static let maURL = NSAttributedString.Key("ma.url")
+}
+
+/// チェックボックスの状態。rawValue は `[ ]` の中の文字
+enum CheckboxState: String {
+    /// `[ ]` 未着手
+    case open = " "
+    /// `[-]` 進行中・保留（コールアウトのタイトルだけ）
+    case partial = "-"
+    /// `[x]` 完了
+    case done = "x"
+
+    init?(mark: Character) {
+        switch mark {
+        case " ": self = .open
+        case "-": self = .partial
+        case "x", "X": self = .done
+        default: return nil
+        }
+    }
 }
 
 /// 文字の代わりに、その文字の位置の中央へ描く記号
@@ -359,11 +378,11 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
     }
 
     /// 段落内のチェックボックスの位置（フラグメント内の座標）と、段落内の文字範囲
-    func checkboxes() -> [(rect: CGRect, range: NSRange, checked: Bool)] {
-        var result: [(CGRect, NSRange, Bool)] = []
+    func checkboxes() -> [(rect: CGRect, range: NSRange, state: CheckboxState)] {
+        var result: [(CGRect, NSRange, CheckboxState)] = []
         for line in textLineFragments {
             line.attributedString.enumerateAttribute(.maCheckbox, in: line.characterRange) { value, range, _ in
-                guard let checked = value as? Bool else { return }
+                guard let raw = value as? String, let state = CheckboxState(rawValue: raw) else { return }
                 let start = line.locationForCharacter(at: range.location).x
                 let end = line.locationForCharacter(at: NSMaxRange(range)).x
                 let bounds = line.typographicBounds
@@ -371,7 +390,7 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
                 let centerY = bounds.minY + line.glyphOrigin.y - NSFont.systemFont(ofSize: 15).capHeight / 2
                 let size: CGFloat = 14
                 let rect = CGRect(x: bounds.minX + (start + end - size) / 2, y: centerY - size / 2, width: size, height: size)
-                result.append((rect, range, checked))
+                result.append((rect, range, state))
             }
         }
         return result
@@ -379,10 +398,11 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
 
     private func drawCheckboxes(at point: CGPoint) {
         drawReplacements(at: point)
-        for (rect, _, checked) in checkboxes() {
+        for (rect, _, state) in checkboxes() {
             let box = rect.offsetBy(dx: point.x, dy: point.y)
             let path = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5), xRadius: 3.5, yRadius: 3.5)
-            if checked {
+            switch state {
+            case .done:
                 NSColor.controlAccentColor.setFill()
                 path.fill()
                 let check = NSBezierPath()
@@ -394,7 +414,19 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
                 check.lineJoinStyle = .round
                 NSColor.white.setStroke()
                 check.stroke()
-            } else {
+            case .partial:
+                // 進行中は枠と横線をアクセント色で描き、灰色の枠の未着手と塗りつぶした完了の間に見せる
+                path.lineWidth = 1.2
+                NSColor.controlAccentColor.setStroke()
+                path.stroke()
+                let dash = NSBezierPath()
+                dash.move(to: CGPoint(x: box.minX + 4, y: box.midY))
+                dash.line(to: CGPoint(x: box.maxX - 4, y: box.midY))
+                dash.lineWidth = 1.8
+                dash.lineCapStyle = .round
+                NSColor.controlAccentColor.setStroke()
+                dash.stroke()
+            case .open:
                 path.lineWidth = 1.2
                 NSColor.secondaryLabelColor.setStroke()
                 path.stroke()
