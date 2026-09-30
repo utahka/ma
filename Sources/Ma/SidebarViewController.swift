@@ -25,6 +25,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     var onToggleBookmark: ((URL) -> Void)?
     var onRemoveBookmark: (([Int]) -> Void)?
     var isBookmarked: ((URL) -> Bool)?
+    /// 右クリックメニューから、ノートかフォルダを削除する
+    var onDelete: ((URL) -> Void)?
     /// タブの切り替えに合わせて選択行を動かしている間は、ノートを開き直さない
     private var isSyncingSelection = false
     let calendarView = CalendarView()
@@ -325,6 +327,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             let item = menu.addItem(withTitle: title, action: #selector(toggleBookmark(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = node.url
+            menu.addItem(.separator())
+            let delete = menu.addItem(withTitle: "削除", action: #selector(deleteItem(_:)), keyEquivalent: "")
+            delete.target = self
+            delete.representedObject = node.url
         case let node as BookmarkNode:
             let item = menu.addItem(withTitle: "お気に入りから外す", action: #selector(removeBookmark(_:)), keyEquivalent: "")
             item.target = self
@@ -337,6 +343,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     @objc private func toggleBookmark(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
         onToggleBookmark?(url)
+    }
+
+    @objc private func deleteItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        onDelete?(url)
     }
 
     @objc private func removeBookmark(_ sender: NSMenuItem) {
