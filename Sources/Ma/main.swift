@@ -70,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         sidebar.onToggleBookmark = { [vault] url in vault.toggleBookmark(url) }
         sidebar.onRemoveBookmark = { [vault] indexPath in vault.removeBookmark(at: indexPath) }
         sidebar.isBookmarked = { [vault] url in vault.isBookmarked(url) }
+        sidebar.onDelete = { [unowned self] url in delete(url) }
         vault.onBookmarksChange = { [unowned self] in
             sidebar.reload(bookmarks: vault.bookmarks)
             updateNoteHeader()
@@ -196,6 +197,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     vault.open(url, newTab: newTab)
                 }
             }
+        }
+    }
+
+    /// サイドバーから削除する。Obsidian で確認をオンにしていれば先に尋ねる
+    private func delete(_ url: URL) {
+        if vault.promptsDelete {
+            let alert = NSAlert()
+            alert.messageText = "「\(url.deletingPathExtension().lastPathComponent)」を削除しますか？"
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            if isDirectory { alert.informativeText = "フォルダの中のファイルもすべて削除します。" }
+            alert.addButton(withTitle: "削除")
+            alert.addButton(withTitle: "キャンセル")
+            alert.buttons[0].hasDestructiveAction = true
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        do {
+            try vault.deleteItem(url)
+        } catch {
+            NSAlert(error: error).runModal()
         }
     }
 

@@ -179,6 +179,56 @@ final class Vault {
         }
     }
 
+    /// Obsidian の設定（`.obsidian/app.json`）を読む。なければ空
+    private var obsidianAppSettings: [String: Any] {
+        guard let root, let data = try? Data(contentsOf: root.appendingPathComponent(".obsidian/app.json")) else { return [:] }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    /// 削除の前に確かめるかどうか。Obsidian の「ファイルの削除を確認する」（`promptDelete`、既定はオン）に合わせる
+    var promptsDelete: Bool { obsidianAppSettings["promptDelete"] as? Bool ?? true }
+
+    /// ノートかフォルダを削除し、その中を開いているタブを閉じる。消し方は Obsidian の `trashOption` に合わせ、
+    /// 既定（`system`）はシステムのゴミ箱、`local` は vault の `.trash`、`none` は完全に消す
+    func deleteItem(_ url: URL) throws {
+        guard let root, relativePath(of: url) != nil else { return }
+        // 保存待ちの本文が消したあとに書き戻されないよう、先に書いておく
+        saveNow()
+        switch obsidianAppSettings["trashOption"] as? String {
+        case "local":
+            let trash = root.appendingPathComponent(".trash", isDirectory: true)
+            try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+            var destination = trash.appendingPathComponent(url.lastPathComponent)
+            var number = 1
+            while FileManager.default.fileExists(atPath: destination.path) {
+                number += 1
+                let name = url.deletingPathExtension().lastPathComponent + " \(number)"
+                destination = trash.appendingPathComponent(url.pathExtension.isEmpty ? name : name + "." + url.pathExtension)
+            }
+            try FileManager.default.moveItem(at: url, to: destination)
+        case "none":
+            try FileManager.default.removeItem(at: url)
+        default:
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        }
+        closeTabs(inside: url)
+        rescan()
+    }
+
+    /// 消したノート（フォルダならその中のノート）を開いているタブを、保存せずに閉じる
+    private func closeTabs(inside url: URL) {
+        let removed = { (tab: Tab) in tab.url.map { $0.path == url.path || $0.path.hasPrefix(url.path + "/") } == true }
+        guard tabs.contains(where: removed) else { return }
+        let active = activeTab.id
+        let activeRemoved = removed(activeTab)
+        for tab in tabs where removed(tab) { loadedTabs.remove(tab.id) }
+        let before = tabs.firstIndex { $0.id == active } ?? 0
+        tabs.removeAll(where: removed)
+        if tabs.isEmpty { tabs = [Tab()] }
+        activeIndex = activeRemoved ? min(before, tabs.count - 1) : tabs.firstIndex { $0.id == active } ?? 0
+        tabsDidChange()
+    }
+
     /// 表示中のブックマークを外す。表示した後にファイルが変わっていたら位置がずれるので、読み直すだけにする
     func removeBookmark(at indexPath: [Int]) {
         updateBookmarks(requiresUnchanged: true) { Bookmarks.removing(at: indexPath, from: $0) }
