@@ -492,15 +492,20 @@ struct MarkdownStyler {
                 }
                 return
             }
-            // タスクは箇条書きの記号を隠し、`[ ]` を透明にしてその位置にチェックボックスを描く
+            // タスクは箇条書きの記号を隠し、`[ ]` を透明にしてその位置にチェックボックスを描く。
+            // カーソル行は `- [ ]` をそのまま文字で見せ、チェックボックスは描かない（クリックの当たり判定も `.maCheckbox` から求めるので無効になる）
             marker(match.range(at: 1), in: storage, active: active)
             let brackets = NSRange(location: checkbox.location, length: 3)
             let checked = (text as NSString).character(at: brackets.location + 1) != 0x20
-            // 本文のフォントのままだと `[` `]` にヒラギノが割り当てられ（日本語環境の約物の扱い）、その行だけ約 6pt 高くなる。
-            // 透明で見えない文字なので置き換えの起きないフォントにし、幅はチェックボックスに合わせる
-            let bracketWidth = "[ ]".size(withAttributes: [.font: checkboxFont]).width
-            storage.addAttributes([.foregroundColor: NSColor.clear, .maCheckbox: checked, .font: checkboxFont], range: brackets)
-            storage.addAttribute(.kern, value: 14 - bracketWidth, range: NSRange(location: NSMaxRange(brackets) - 1, length: 1))
+            if active {
+                marker(brackets, in: storage, active: true)
+            } else {
+                // 本文のフォントのままだと `[` `]` にヒラギノが割り当てられ（日本語環境の約物の扱い）、その行だけ約 6pt 高くなる。
+                // 透明で見えない文字なので置き換えの起きないフォントにし、幅はチェックボックスに合わせる
+                let bracketWidth = "[ ]".size(withAttributes: [.font: checkboxFont]).width
+                storage.addAttributes([.foregroundColor: NSColor.clear, .maCheckbox: checked, .font: checkboxFont], range: brackets)
+                storage.addAttribute(.kern, value: 14 - bracketWidth, range: NSRange(location: NSMaxRange(brackets) - 1, length: 1))
+            }
             if checked {
                 let rest = NSRange(location: NSMaxRange(checkbox), length: NSMaxRange(line) - NSMaxRange(checkbox))
                 storage.addAttributes([
