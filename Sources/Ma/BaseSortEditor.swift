@@ -324,7 +324,7 @@ extension BaseFile {
     }
 
     /// 列の ID を `.base` に書く名前にする。Obsidian と同じく、ノートのプロパティは `note.` を付けない
-    private static func rawName(_ property: String) -> String {
+    static func rawName(_ property: String) -> String {
         guard property.hasPrefix("note.") else { return property }
         let name = String(property.dropFirst(5))
         return BaseExpression.propertyID(name) == property ? name : property

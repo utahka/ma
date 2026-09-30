@@ -34,6 +34,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     /// グループ化するプロパティと向きを選ぶボタン（Notion のビューの上の控えめなボタンにならう）
     private let groupButton = NSButton(title: "", target: nil, action: nil)
     private let sortEditor = BaseSortEditor()
+    private let propertiesEditor = BasePropertiesEditor()
     private let countLabel = NSTextField(labelWithString: "")
     private let filterButton = NSButton()
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
@@ -86,6 +87,11 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             guard let self, self.rows.indices.contains(row), case .header = self.rows[row] else { return false }
             return true
         }
+        // 列の見出し（表の上の見出しと、グループごとの見出しの行）の右クリックメニュー
+        let header = BaseHeaderView(frame: tableView.headerView?.frame ?? .zero)
+        tableView.headerView = header
+        header.menuForColumn = { [weak self] column in self?.columnMenu(at: column) }
+        tableView.menuForHeaderColumn = { [weak self] column in self?.columnMenu(at: column) }
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
@@ -95,7 +101,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
 
         let container = NSView()
         sortEditor.onChange = { [weak self] sort in self?.saveSort(sort) }
-        for view in [viewPicker, groupButton, countLabel, messageLabel, scrollView, sortEditor.button, filterButton] {
+        propertiesEditor.onChange = { [weak self] order in self?.saveVisibleColumns(order) }
+        for view in [viewPicker, groupButton, countLabel, messageLabel, scrollView, sortEditor.button, filterButton, propertiesEditor.button] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -111,6 +118,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             sortEditor.button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -56),
             filterButton.centerYAnchor.constraint(equalTo: viewPicker.centerYAnchor),
             filterButton.trailingAnchor.constraint(equalTo: sortEditor.button.leadingAnchor, constant: -12),
+            propertiesEditor.button.centerYAnchor.constraint(equalTo: viewPicker.centerYAnchor),
+            propertiesEditor.button.trailingAnchor.constraint(equalTo: filterButton.leadingAnchor, constant: -12),
             messageLabel.topAnchor.constraint(equalTo: viewPicker.bottomAnchor, constant: 16),
             messageLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             messageLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
@@ -221,6 +230,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             }
         }
         sortEditor.update(sort: view.sort, candidates: sortCandidates(view, base: base))
+        propertiesEditor.update(visible: view.order.isEmpty ? ["file.name"] : view.order,
+                                candidates: propertyCandidates(view, base: base))
         let total = groups.reduce(0) { $0 + $1.notes.count }
         countLabel.stringValue = "\(total) 件"
         // 列を足すと表は今の行数のままセルを作ろうとするので、列を作り直すあいだは行を空にしておく
@@ -313,6 +324,75 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         } catch {
             NSLog("列の保存に失敗: \(url.path): \(error)")
         }
+    }
+
+    // MARK: - 表示する列
+
+    /// 表に出せるプロパティ。今の列、`properties:` に定義のあるもの、対象ノートのフロントマターのキー、ファイルの属性の順
+    private func propertyCandidates(_ view: BaseFile.View, base: BaseFile) -> [BasePropertiesEditor.Candidate] {
+        var seen = Set<String>()
+        var ids: [String] = []
+        func add(_ id: String) { if seen.insert(id).inserted { ids.append(id) } }
+        view.order.forEach(add)
+        let types = propertyTypes()
+        let targets = notes.filter { base.contains($0, types: types) } + groups.flatMap(\.notes)
+        let others = Set(base.schemas.keys).union(base.displayNames.keys.filter { $0.hasPrefix("note.") })
+            .union(targets.flatMap { $0.properties.keys.map { "note." + $0 } })
+        others.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.forEach(add)
+        ["file.name", "file.path", "file.folder", "file.ext", "file.ctime", "file.mtime", "file.size"].forEach(add)
+        return ids.map { BasePropertiesEditor.Candidate(property: $0, title: base.displayName(of: $0)) }
+    }
+
+    /// 表に出す列（列の ID を表示順に並べたもの）を、そのビューの `order` に書く。
+    /// 隠した列の幅（`columnSize`）は残す（Obsidian も残す）
+    private func saveVisibleColumns(_ ids: [String]) {
+        guard let url, let base, base.views.indices.contains(selectedView), !ids.isEmpty else { return }
+        let view = base.views[selectedView]
+        let raw = Dictionary(zip(view.order, view.rawOrder), uniquingKeysWith: { first, _ in first })
+        let order = ids.map { raw[$0] ?? BaseFile.rawName($0) }
+        guard order != view.rawOrder else { return }
+        // 列の幅の保存を待っていたら先に書く（あとから古い列の並びで書き戻さないように）
+        if saveColumnsTask != nil {
+            saveColumnsTask?.cancel()
+            saveColumnsTask = nil
+            saveColumns()
+        }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let updated = BaseFile.updatingColumns(text, view: selectedView, order: order, columnSize: [:]) else {
+                return NSLog("表示するプロパティを保存できません（.base の形が想定と違います）: \(url.path)")
+            }
+            if updated != text { try updated.write(to: url, atomically: true, encoding: .utf8) }
+            self.base = try BaseFile(yaml: updated)
+        } catch {
+            NSLog("表示するプロパティの保存に失敗: \(url.path): \(error)")
+        }
+        rebuild()
+    }
+
+    private func hideColumn(_ property: String) {
+        let ids = tableView.tableColumns.map(\.identifier.rawValue).filter { $0 != property }
+        saveVisibleColumns(ids)
+    }
+
+    // MARK: - 列の見出しのメニュー
+
+    /// 列の見出しの右クリックメニュー。列ごとの操作はここに項目を足す
+    private func columnMenu(at column: Int) -> NSMenu? {
+        guard tableView.tableColumns.indices.contains(column) else { return nil }
+        let property = tableView.tableColumns[column].identifier.rawValue
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        func add(_ title: String, symbol: String, enabled: Bool = true, action: @escaping () -> Void) {
+            let item = ClosureMenuItem(title: title, action: action)
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            item.isEnabled = enabled
+            menu.addItem(item)
+        }
+        add("列を隠す", symbol: "eye.slash", enabled: tableView.tableColumns.count > 1) { [weak self] in
+            self?.hideColumn(property)
+        }
+        return menu
     }
 
     // MARK: - グループ化の設定
@@ -693,10 +773,37 @@ private final class ClosureButton: NSButton {
     @objc private func press() { onPress() }
 }
 
+/// 押したらクロージャを呼ぶメニューの項目
+private final class ClosureMenuItem: NSMenuItem {
+    private let onSelect: () -> Void
+
+    init(title: String, action: @escaping () -> Void) {
+        onSelect = action
+        super.init(title: title, action: #selector(select), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) { fatalError() }
+
+    @objc private func select() { onSelect() }
+}
+
+/// 表の上の列の見出し。右クリックした列のメニューを出す
+private final class BaseHeaderView: NSTableHeaderView {
+    var menuForColumn: (Int) -> NSMenu? = { _ in nil }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let column = column(at: convert(event.locationInWindow, from: nil))
+        return column >= 0 ? menuForColumn(column) : nil
+    }
+}
+
 /// グループごとの列の見出しの行で、列の境界のドラッグで幅を、見出しのドラッグで順番を変えられる表
 /// （グループに分けたときは表の上の見出しを出さないので、その代わり）
 private final class BaseTableView: NSTableView {
     var isHeaderRow: (Int) -> Bool = { _ in false }
+    /// グループごとの列の見出しの行を右クリックしたときのメニュー
+    var menuForHeaderColumn: (Int) -> NSMenu? = { _ in nil }
 
     private static let grabWidth: CGFloat = 4
 
@@ -709,6 +816,13 @@ private final class BaseTableView: NSTableView {
         } else if case let column = self.column(at: point), column >= 0, allowsColumnReordering {
             trackMove(of: column)
         }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = row(at: point), column = column(at: point)
+        guard row >= 0, isHeaderRow(row), column >= 0 else { return super.menu(for: event) }
+        return menuForHeaderColumn(column)
     }
 
     /// 境界の左の列（右端が point の近くにある列）
