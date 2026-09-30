@@ -186,7 +186,7 @@ final class Vault {
 
     private func updateBookmarks(requiresUnchanged: Bool = false, _ change: ([Any]) -> [Any]) {
         guard let root else { return }
-        guard var (document, data) = Bookmarks.readDocument(root: root) else {
+        guard case (var document, let data)? = Bookmarks.readDocument(root: root) else {
             NSLog("ブックマークを読めないので変更しない: \(Bookmarks.fileURL(root: root).path)")
             return
         }

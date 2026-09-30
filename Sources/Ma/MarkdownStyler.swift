@@ -295,7 +295,6 @@ struct MarkdownStyler {
             var carried: CGFloat = 0
             let lineStart = row.line.content.location
             for column in 0..<min(columnCount, row.cells.count) {
-                let cell = row.cells[column]
                 let content = textRanges[rowIndex][column]
                 let width = measured[rowIndex][column]
                 let left: CGFloat
