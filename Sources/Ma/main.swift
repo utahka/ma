@@ -70,7 +70,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         sidebar.onToggleBookmark = { [vault] url in vault.toggleBookmark(url) }
         sidebar.onRemoveBookmark = { [vault] indexPath in vault.removeBookmark(at: indexPath) }
         sidebar.isBookmarked = { [vault] url in vault.isBookmarked(url) }
-        vault.onBookmarksChange = { [unowned self] in sidebar.reload(bookmarks: vault.bookmarks) }
+        vault.onBookmarksChange = { [unowned self] in
+            sidebar.reload(bookmarks: vault.bookmarks)
+            updateFavoriteButton()
+        }
+        editor.onToggleFavorite = { [unowned self] in toggleBookmark(nil) }
         sidebar.calendarView.onSelectDate = { [vault] date in vault.openDailyNote(for: date) }
         vault.onNotesChange = { [unowned self] in
             let calendar = sidebar.calendarView
@@ -86,7 +90,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             sidebar.calendarView.selectedDate = url.flatMap { vault.dailyNotes?.date(of: $0) }
             window.title = url?.deletingPathExtension().lastPathComponent ?? "Ma"
             window.subtitle = vault.root?.lastPathComponent ?? ""
+            updateFavoriteButton()
         }
+    }
+
+    private func updateFavoriteButton() {
+        editor.setFavorite(vault.activeTab.url.map { vault.isBookmarked($0) })
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -230,10 +239,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if menuItem.action == #selector(goForward(_:)) { return vault.canGoForward }
         guard menuItem.action == #selector(toggleBookmark(_:)) else { return true }
         guard let url = vault.activeTab.url else {
-            menuItem.title = "ブックマークに追加"
+            menuItem.title = "お気に入りに追加"
             return false
         }
-        menuItem.title = vault.isBookmarked(url) ? "ブックマークから外す" : "ブックマークに追加"
+        menuItem.title = vault.isBookmarked(url) ? "お気に入りから外す" : "お気に入りに追加"
         return true
     }
 
@@ -273,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         file.addItem(withTitle: "フォルダを開く…", action: #selector(openFolder(_:)), keyEquivalent: "o")
         file.addItem(withTitle: "保存", action: #selector(save(_:)), keyEquivalent: "s")
         file.addItem(withTitle: "今日のデイリーノート", action: #selector(openTodayNote(_:)), keyEquivalent: "d")
-        file.addItem(withTitle: "ブックマークに追加", action: #selector(toggleBookmark(_:)), keyEquivalent: "B")
+        file.addItem(withTitle: "お気に入りに追加", action: #selector(toggleBookmark(_:)), keyEquivalent: "B")
         file.addItem(.separator())
         file.addItem(withTitle: "タブを閉じる", action: #selector(closeTab(_:)), keyEquivalent: "w")
         file.addItem(withTitle: "ウインドウを閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "W")

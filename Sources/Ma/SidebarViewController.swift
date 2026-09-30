@@ -1,6 +1,6 @@
 import AppKit
 
-/// ブックマークの行。読み直すたびに作り直す
+/// お気に入りの行。読み直すたびに作り直す
 private final class BookmarkNode {
     let bookmark: Bookmark
     let children: [BookmarkNode]
@@ -11,7 +11,7 @@ private final class BookmarkNode {
     }
 }
 
-/// 上部のボタンで切り替える、ファイルツリーとブックマークの一覧。その下にカレンダー。
+/// 上部のボタンで切り替える、ファイルツリーとお気に入りの一覧。その下にカレンダー。
 /// ノートを選ぶと `onSelect` を呼ぶ（⌘クリックは新しいタブ）
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     enum Mode: String {
@@ -21,7 +21,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     var onSelect: ((URL, _ newTab: Bool) -> Void)?
     var onOpenBookmark: ((Bookmark, _ newTab: Bool) -> Void)?
-    /// 右クリックメニューから、ノートかフォルダをブックマークに加える・外す
+    /// 右クリックメニューから、ノートかフォルダをお気に入りに加える・外す
     var onToggleBookmark: ((URL) -> Void)?
     var onRemoveBookmark: (([Int]) -> Void)?
     var isBookmarked: ((URL) -> Bool)?
@@ -36,7 +36,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private let bookmarksView = NSOutlineView()
     private var scrollViews: [Mode: NSScrollView] = [:]
     private var modeButtons: [Mode: NSButton] = [:]
-    private let emptyBookmarksLabel = NSTextField(wrappingLabelWithString: "ブックマークはありません。右クリックか ⌘⇧B で追加できます")
+    private let emptyBookmarksLabel = NSTextField(wrappingLabelWithString: "お気に入りはありません。右クリックか ⌘⇧B で追加できます")
     private var tree: [FileNode] = []
     private var bookmarkNodes: [BookmarkNode] = []
     /// 選択中のタブのノート。読み直した後に選択行を戻すのに使う
@@ -46,7 +46,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 4
-        for (mode, symbol, label) in [(Mode.files, "folder", "ファイル"), (.bookmarks, "bookmark", "ブックマーク")] {
+        for (mode, symbol, label) in [(Mode.files, "folder", "ファイル"), (.bookmarks, "star", "お気に入り")] {
             let button = NSButton(image: Self.centeredSymbol(symbol, label: label), target: self, action: #selector(modeButtonClicked(_:)))
             // 選んでいる一覧は枠ではなく色で示す
             button.isBordered = false
@@ -127,7 +127,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     /// SF Symbols の画像は文字に並べるための枠（alignmentRect）を持ち、NSButton はその枠を中央に置く。
-    /// 枠と絵の中心のずれがアイコンごとに違い、フォルダとブックマークで 1pt 高さがずれたので、
+    /// 枠と絵の中心のずれがアイコンごとに違い、フォルダとお気に入りで 1pt 高さがずれたので、
     /// 枠を持たない画像に描き直して絵の中心を信号機ボタンの中心に揃える
     private static func centeredSymbol(_ name: String, label: String) -> NSImage {
         let symbol = NSImage(systemSymbolName: name, accessibilityDescription: label)!
@@ -195,7 +195,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
-    /// ブックマークしたフォルダを選んだとき、ファイルの一覧に切り替えてそのフォルダを開いて見せる
+    /// お気に入りしたフォルダを選んだとき、ファイルの一覧に切り替えてそのフォルダを開いて見せる
     func reveal(folder url: URL) {
         func path(to nodes: [FileNode]) -> [FileNode]? {
             for node in nodes where node.isDirectory {
@@ -212,7 +212,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         select(currentURL)
     }
 
-    /// その行で開くノート（フォルダやブックマークのグループは nil）
+    /// その行で開くノート（フォルダやお気に入りのグループは nil）
     private func noteURL(ofRow row: Int, in outlineView: NSOutlineView) -> URL? {
         guard row >= 0 else { return nil }
         switch outlineView.item(atRow: row) {
@@ -278,7 +278,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
                 }
             case .folder: symbol = "folder"
             case .url: symbol = "link"
-            case .group: symbol = "bookmark"
+            case .group: symbol = "star.square.on.square"
             case .other: symbol = "questionmark.square.dashed"
             }
         default:
@@ -321,12 +321,12 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let outlineView = menu === bookmarksView.menu ? bookmarksView : filesView
         switch outlineView.item(atRow: outlineView.clickedRow) {
         case let node as FileNode:
-            let title = isBookmarked?(node.url) == true ? "ブックマークから外す" : "ブックマークに追加"
+            let title = isBookmarked?(node.url) == true ? "お気に入りから外す" : "お気に入りに追加"
             let item = menu.addItem(withTitle: title, action: #selector(toggleBookmark(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = node.url
         case let node as BookmarkNode:
-            let item = menu.addItem(withTitle: "ブックマークから外す", action: #selector(removeBookmark(_:)), keyEquivalent: "")
+            let item = menu.addItem(withTitle: "お気に入りから外す", action: #selector(removeBookmark(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = node.bookmark.indexPath
         default:

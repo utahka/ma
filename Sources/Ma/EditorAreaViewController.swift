@@ -11,10 +11,13 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     var propertyTypes: () -> PropertyTypes? = { nil }
     var loadNotes: () async -> [NoteRecord] = { [] }
     var propertySchemas: (_ url: URL, _ text: String) -> [String: PropertySchema] = { _, _ in [:] }
+    /// 右上の☆で、開いているノートをお気に入りに加える・外す
+    var onToggleFavorite: (() -> Void)?
 
     private let content = NSView()
     private var contents: [Tab.ID: NSViewController] = [:]
     private weak var shown: NSViewController?
+    private let favoriteButton = NSButton()
 
     private static let sourceModeKey = "sourceMode"
     /// ソース表示（装飾なし）かどうか。⌘E で全タブまとめて切り替え、次回の起動にも引き継ぐ
@@ -39,8 +42,36 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
             content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+        favoriteButton.isBordered = false
+        favoriteButton.refusesFirstResponder = true
+        favoriteButton.target = self
+        favoriteButton.action = #selector(favoriteClicked(_:))
+        favoriteButton.translatesAutoresizingMaskIntoConstraints = false
+        // 中身より後に載せて、スクロールする本文の上に重ねる
+        container.addSubview(favoriteButton)
+        NSLayoutConstraint.activate([
+            favoriteButton.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
+            // 右端のスクローラーに重ならないよう少し内側に置く
+            favoriteButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            favoriteButton.widthAnchor.constraint(equalToConstant: 26),
+            favoriteButton.heightAnchor.constraint(equalToConstant: 26),
+        ])
+        setFavorite(nil)
         view = container
     }
+
+    /// ☆の表示を開いているノートに合わせる。nil はノートを開いていない（ボタンを隠す）
+    func setFavorite(_ isFavorite: Bool?) {
+        favoriteButton.isHidden = isFavorite == nil
+        let filled = isFavorite == true
+        let label = filled ? "お気に入りから外す" : "お気に入りに追加"
+        favoriteButton.image = NSImage(systemSymbolName: filled ? "star.fill" : "star", accessibilityDescription: label)?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
+        favoriteButton.contentTintColor = filled ? .systemYellow : .secondaryLabelColor
+        favoriteButton.toolTip = label
+    }
+
+    @objc private func favoriteClicked(_ sender: NSButton) { onToggleFavorite?() }
 
     func show(_ document: OpenDocument?, in tab: Tab.ID) {
         if let document, document.url.pathExtension.lowercased() == "base" {
