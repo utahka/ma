@@ -7,6 +7,11 @@ struct MarkdownStyler {
     private let bodyFont = NSFont.systemFont(ofSize: 15)
     private let monoFont = NSFont.monospacedSystemFont(ofSize: 13.5, weight: .regular)
     private let hiddenFont = NSFont.systemFont(ofSize: 0.01)
+    /// 箇条書きの1段の幅（タブ1つ、または空白2つ）
+    private let listIndentStep: CGFloat = 28
+    private var spaceKern: CGFloat {
+        listIndentStep / 2 - (" " as NSString).size(withAttributes: [.font: bodyFont]).width
+    }
     private let headingSizes: [CGFloat] = [0, 26, 22, 19, 17, 15, 15]
     private let paragraphStyle: NSParagraphStyle = {
         let style = NSMutableParagraphStyle()
@@ -457,7 +462,22 @@ struct MarkdownStyler {
             // 箇条書きとタスクは項目どうしの間を少し空ける（通常の段落よりは詰める）
             let style = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
             style.paragraphSpacing = 5
+            // 行頭の空白2つとタブ1つを同じ1段の幅にする。タブは1段ごとのタブ位置へ進み、空白は字間で半段に広げる。
+            // 字間は連続する空白の先頭の1文字にまとめて付ける（空白ごとに付けると、足される幅が文字数ぶんにならない）
+            style.tabStops = []
+            style.defaultTabInterval = listIndentStep
             storage.addAttribute(.paragraphStyle, value: style, range: line)
+            let string = text as NSString
+            var index = line.location
+            while index < NSMaxRange(line), string.character(at: index) == 0x09 || string.character(at: index) == 0x20 {
+                let start = index
+                while index < NSMaxRange(line), string.character(at: index) == 0x20 { index += 1 }
+                if index > start {
+                    storage.addAttribute(.kern, value: CGFloat(index - start) * spaceKern, range: NSRange(location: start, length: 1))
+                } else {
+                    index += 1
+                }
+            }
             let checkbox = match.range(at: 2)
             guard checkbox.location != NSNotFound else {
                 let bullet = match.range(at: 1)

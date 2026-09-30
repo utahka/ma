@@ -248,6 +248,6 @@ struct BlockMover {
     }
 
     private static func columns(_ whitespace: String) -> Int {
-        whitespace.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+        whitespace.reduce(0) { $0 + ($1 == "\t" ? 2 : 1) }
     }
 }
