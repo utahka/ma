@@ -30,6 +30,8 @@ struct MarkdownStyler {
     private let bold = Self.regex(#"(\*\*|__)(?=\S)[^\n]+?(?<=\S)\1"#)
     private let italic = Self.regex(#"(?<![*\w])([*_])(?=\S)[^*_\n]+?(?<=\S)\1(?![*\w])"#)
     private let strike = Self.regex(#"~~(?=\S)[^\n]+?(?<=\S)~~"#)
+    /// Obsidian のハイライト `==文字==`。本文に `==` を含めると、隣のハイライトとの間まで巻き込む
+    private let highlight = Self.regex(#"==(?=\S)(?:(?!==)[^\n])+?(?<=\S)=="#)
     private let wikiLink = Self.regex(#"\[\[([^\]|\n]+)(\|[^\]\n]+)?\]\]"#)
     private let link = Self.regex(#"\[([^\]\n]+)\]\(([^)\n]+)\)"#)
     private let calloutHeader = Self.regex(#"^>[ \t]?\[!([A-Za-z-]+)\]([+-])?[ \t]*(.*)$"#)
@@ -610,7 +612,9 @@ struct MarkdownStyler {
                 with: String(repeating: "\u{FFFC}", count: match.range.length)
             )
         }
-        // AI へのコメントは、選んだ文字をハイライトし、コメントは隠してホバーで出す。コメントの中は他の記法として読まない
+        // AI へのコメントは、選んだ文字をハイライトし、コメントは隠してホバーで出す。コメントの中は他の記法として読まない。
+        // 選んだ文字の `==…==` に通常のハイライトの黄色が重ならないよう、ハイライトは AI へのコメント全体を塗りつぶした行で探す
+        let highlightMasked = NSMutableString(string: masked)
         for match in aiComment.matches(in: masked as String, range: NSRange(location: 0, length: masked.length)) {
             let whole = match.range.offset(by: line.location)
             let body = match.range(at: 1).offset(by: line.location)
@@ -621,6 +625,7 @@ struct MarkdownStyler {
             marker(NSRange(location: NSMaxRange(body), length: 2), in: storage, active: active)
             marker(comment, in: storage, active: active)
             masked.replaceCharacters(in: match.range(at: 2), with: String(repeating: "\u{FFFC}", count: comment.length))
+            highlightMasked.replaceCharacters(in: match.range, with: String(repeating: "\u{FFFC}", count: whole.length))
         }
         let maskedText = masked as String
         func matches(_ regex: NSRegularExpression) -> [NSTextCheckingResult] {
@@ -643,6 +648,11 @@ struct MarkdownStyler {
                 .foregroundColor: NSColor.secondaryLabelColor,
             ], range: match.range)
             wrapMarkers(match.range, length: 2, in: storage, active: active)
+        }
+        for match in highlight.matches(in: highlightMasked as String, range: NSRange(location: 0, length: highlightMasked.length)) {
+            let range = match.range.offset(by: line.location)
+            storage.addAttribute(.backgroundColor, value: NSColor.maHighlight, range: range)
+            wrapMarkers(range, length: 2, in: storage, active: active)
         }
         for match in matches(wikiLink) {
             let name = string.substring(with: match.range(at: 1))
