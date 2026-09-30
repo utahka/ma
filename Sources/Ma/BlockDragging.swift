@@ -251,8 +251,8 @@ final class BlockDragController {
         return (base, (nestedX - base) / CGFloat(Self.depth(nested.indent)))
     }
 
-    /// 行頭の空白が何段ぶんか（タブ1つ、または空白4つで1段）
+    /// 行頭の空白が何段ぶんか（タブ1つ、または空白2つで1段）
     private static func depth(_ indent: String) -> Int {
-        (indent.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) } + 3) / 4
+        (indent.reduce(0) { $0 + ($1 == "\t" ? 2 : 1) } + 1) / 2
     }
 }
