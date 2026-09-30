@@ -361,7 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         edit.addItem(withTitle: "すべてを選択", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         edit.addItem(.separator())
         edit.addItem(withTitle: "プロパティを追加", action: #selector(EditorAreaViewController.addProperty(_:)), keyEquivalent: ";")
-        edit.addItem(withTitle: "AI へのコメントを追加…", action: #selector(EditorAreaViewController.addAIComment(_:)), keyEquivalent: "M")
+        edit.addItem(withTitle: "コメントを追加…", action: #selector(EditorAreaViewController.addAIComment(_:)), keyEquivalent: "M")
         edit.addItem(.separator())
         let find = edit.addItem(withTitle: "検索…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
         find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)

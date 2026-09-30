@@ -12,6 +12,9 @@ extension NSColor {
             : NSColor(srgbRed: 0x6A / 255, green: 0x86 / 255, blue: 0x95 / 255, alpha: 1)
     }
 
+    /// AI へのコメントを付けた箇所の背景。Obsidian の `==` のハイライト（黄色）と見分けられるよう紫にする
+    static let maAIComment = NSColor.systemPurple.withAlphaComponent(0.18)
+
     private static func lightModeGray(named name: String, white: CGFloat) -> NSColor {
         NSColor(name: name) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua

@@ -13,6 +13,34 @@ enum LinkTarget {
 final class EditorTextView: NSTextView {
     private let maxTextWidth: CGFloat = 760
 
+    /// コメントを付けられる選択範囲。前後の空白を除き、1行に収まり `==` を含まない選択だけを返す
+    var commentableSelection: NSRange? {
+        let string = self.string as NSString
+        var range = selectedRange()
+        guard range.length > 0, NSMaxRange(range) <= string.length else { return nil }
+        let whitespace = CharacterSet.whitespaces
+        func isSpace(_ index: Int) -> Bool {
+            string.substring(with: NSRange(location: index, length: 1)).unicodeScalars.allSatisfy(whitespace.contains)
+        }
+        while range.length > 0, isSpace(range.location) { range.location += 1; range.length -= 1 }
+        while range.length > 0, isSpace(NSMaxRange(range) - 1) { range.length -= 1 }
+        let selected = string.substring(with: range)
+        // `==` を含むと、付けたハイライトの範囲が崩れる
+        guard range.length > 0, selected.rangeOfCharacter(from: .newlines) == nil, !selected.contains("==") else { return nil }
+        return range
+    }
+
+    /// 文字を選んで右クリックしたとき、メニューの先頭に「コメントを追加…」を出す
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        if let menu, commentableSelection != nil {
+            menu.insertItem(.separator(), at: 0)
+            menu.insertItem(withTitle: "コメントを追加…", action: #selector(EditorAreaViewController.addAIComment(_:)),
+                            keyEquivalent: "", at: 0)
+        }
+        return menu
+    }
+
     private struct ColumnDrag {
         let layout: TableLayout
         let column: Int
@@ -540,16 +568,17 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         if url != nil { view.window?.makeFirstResponder(textView) }
     }
 
-    /// カーソル行の前に、Markdown を読む AI 向けの HTML コメントを挿入する
+    /// 選択中の文字に AI 向けのコメントを付ける。`==選択した文字==<!-- AI: コメント -->` と書き、
+    /// Obsidian でもハイライトとして読める形にする。記法が行をまたげないので、1行の中の選択に限る
     func addAIComment() {
-        guard url != nil else { return }
+        guard url != nil, let range = textView.commentableSelection else { NSSound.beep(); return }
         let alert = NSAlert()
-        alert.messageText = "AI へのコメント"
-        alert.informativeText = "このノートを読む AI への指示や補足を入力してください。"
+        alert.messageText = "コメントを追加"
+        alert.informativeText = "選んだ箇所について、このノートを読む AI への指示や補足を入力してください。"
         alert.addButton(withTitle: "追加")
         alert.addButton(withTitle: "キャンセル")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
-        field.placeholderString = "例: この段落を短く書き直して"
+        field.placeholderString = "例: ここを短く書き直して"
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -557,12 +586,10 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
             // コメントを途中で閉じてしまう `-->` だけを崩す（他の `--` は書いたまま残す）
             .replacingOccurrences(of: "-->", with: "->")
         guard !comment.isEmpty else { return }
-        let string = textView.string as NSString
-        let location = min(textView.selectedRange().location, string.length)
-        let line = string.lineRange(for: NSRange(location: location, length: 0))
-        let insertion = "<!-- AI: \(comment) -->\n"
-        textView.replace(NSRange(location: line.location, length: 0), with: insertion, actionName: "AI へのコメントを追加")
-        textView.setSelectedRange(NSRange(location: line.location + (insertion as NSString).length, length: 0))
+        let selected = (textView.string as NSString).substring(with: range)
+        let replacement = "==\(selected)==<!-- AI: \(comment) -->"
+        textView.replace(range, with: replacement, actionName: "コメントを追加")
+        textView.setSelectedRange(NSRange(location: range.location + (replacement as NSString).length, length: 0))
     }
 
     func textDidChange(_ notification: Notification) {
