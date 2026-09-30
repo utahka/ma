@@ -22,6 +22,14 @@ final class Replacement: NSObject, @unchecked Sendable {
         self.symbol = symbol
         self.color = color
     }
+
+    // 再装飾のたびに作り直すので、中身で比べる（変わっていない段落のレイアウトを捨てないため）
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? Replacement else { return false }
+        return symbol == other.symbol && color == other.color
+    }
+
+    override var hash: Int { symbol.hashValue }
 }
 
 /// 引用とコールアウトの枠
@@ -48,6 +56,14 @@ final class BoxDecoration: NSObject, @unchecked Sendable {
         self.isLast = isLast
         self.isQuote = isQuote
     }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? BoxDecoration else { return false }
+        return color == other.color && icon == other.icon && fallbackTitle == other.fallbackTitle && foldable == other.foldable
+            && collapsed == other.collapsed && isFirst == other.isFirst && isLast == other.isLast && isQuote == other.isQuote
+    }
+
+    override var hash: Int { icon.hashValue ^ isFirst.hashValue ^ isLast.hashValue }
 
     static func quote(isFirst: Bool, isLast: Bool) -> BoxDecoration {
         BoxDecoration(color: .tertiaryLabelColor, icon: nil, fallbackTitle: nil, foldable: false, collapsed: false,
@@ -104,6 +120,14 @@ final class TableLayout: NSObject, @unchecked Sendable {
         self.tableRange = tableRange
     }
 
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? TableLayout else { return false }
+        return columnWidths == other.columnWidths && alignments == other.alignments && separatorRange == other.separatorRange
+            && rows == other.rows && tableRange == other.tableRange
+    }
+
+    override var hash: Int { separatorRange.location }
+
     /// 最終行の末尾（改行の手前）。行を追加するときはここに挿入する
     var endOfLastRow: Int {
         var end = NSMaxRange(tableRange)
@@ -134,17 +158,27 @@ final class TableLayout: NSObject, @unchecked Sendable {
         return (columnWidths.map { floor($0 * scale) }, scale)
     }
 
+    /// 区切り行のセルに付く `:` の数
+    private func colonCount(_ column: Int) -> Int {
+        switch column < alignments.count ? alignments[column] : .left {
+        case .center: return 2
+        case .right: return 1
+        default: return 0
+        }
+    }
+
+    /// 区切り行に保存できる最も狭い幅（`-` 3 本と揃えの `:`）
+    func minimumWidth(of column: Int) -> CGFloat {
+        max(Self.minimumWidth, CGFloat(3 + colonCount(column)) * Self.dashWidth + TableRowDecoration.cellPadding * 2)
+    }
+
     /// 現在の列幅を `-` の数に直した区切り行
     func separatorLine() -> String {
-        let colons = columnWidths.indices.map { column -> Int in
-            switch column < alignments.count ? alignments[column] : .left {
-            case .center: return 2
-            case .right: return 1
-            default: return 0
-            }
-        }
+        let colons = columnWidths.indices.map(colonCount)
         var dashes = columnWidths.enumerated().map { column, width -> Int in
-            let length = Int(((width - TableRowDecoration.cellPadding * 2) / Self.dashWidth).rounded())
+            // 自動幅の列は中身に合わせた半端な幅なので、切り上げて中身が折り返さないようにする
+            // （ドラッグした列は 8pt 刻みに丸めてあるので変わらない）
+            let length = Int(((width - TableRowDecoration.cellPadding * 2) / Self.dashWidth - 0.01).rounded(.up))
             return max(3, length - colons[column])
         }
         // どの列も `-` が 3 本以下だと自動幅として読まれるので、いちばん広い列を 4 本にする
@@ -187,6 +221,13 @@ final class TableRowDecoration: NSObject, @unchecked Sendable {
         self.cellTexts = cellTexts
         self.isLast = isLast
     }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? TableRowDecoration else { return false }
+        return kind == other.kind && isLast == other.isLast && layout == other.layout && cellTexts == other.cellTexts
+    }
+
+    override var hash: Int { layout.hash }
 }
 
 /// 段落に付いた装飾を、テキストの下（背景・罫線）と上（アイコン・セル）に描く
