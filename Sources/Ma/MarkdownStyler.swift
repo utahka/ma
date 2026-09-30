@@ -59,13 +59,14 @@ struct MarkdownStyler {
     /// `calloutIcons` が false ならコールアウトのタイトルの左のアイコンを描かない。
     /// `expandedCallouts` は開閉の印で開いた `[!note]-` の見出し行の先頭で、カーソルが外にあってもたたまない。
     /// `selection` は選択範囲。表の1つのセルに収まっていれば、そのセルを表の形のまま編集できるように並べる
+    /// `collapsedLists` はたたんで見せるトグル。子の行を高さのない行にして隠し、最初の行に ▸ を描かせる
     @discardableResult
     func apply(
         to storage: NSTextStorage, activeRange: NSRange, availableWidth: CGFloat, sourceMode: Bool,
         selection: NSRange? = nil,
         draggedWidths: (separator: Int, widths: [CGFloat])? = nil,
         frontmatter: (range: NSRange, height: CGFloat)? = nil,
-        calloutIcons: Bool = true, expandedCallouts: Set<Int> = []
+        calloutIcons: Bool = true, expandedCallouts: Set<Int> = [], collapsedLists: [ListToggle] = []
     ) -> [TableLayout] {
         let text = storage.string
         let string = text as NSString
@@ -100,10 +101,18 @@ struct MarkdownStyler {
             }
             index = hidden.count
         }
+        var foldedLines = IndexSet()
+        for toggle in collapsedLists { foldedLines.insert(integersIn: toggle.hidden.location..<NSMaxRange(toggle.hidden)) }
+        let foldStarts = Dictionary(collapsedLists.map { ($0.start, $0) }, uniquingKeysWith: { first, _ in first })
         while index < lines.count {
             let line = lines[index]
             let active = isActive(line.full)
 
+            if foldedLines.contains(line.full.location) {
+                hideFoldedLine(line, in: storage)
+                index += 1
+                continue
+            }
             if let end = embedEnd(from: index, in: lines, text: text),
                !isActive(line.full.union(lines[end].full)),
                styleEmbed(Array(lines[index...end]), text: text, in: storage) {
@@ -135,11 +144,32 @@ struct MarkdownStyler {
                 index = end
                 continue
             }
+            let above = (0..<index).reversed().lazy.map { ($0, string.substring(with: lines[$0].content)) }
+            if let owner = ListLine.owner(of: string.substring(with: line.content), allowsBlank: true, above: above) {
+                styleListContinuation(line.content, owner: string.substring(with: lines[owner].content),
+                                      previous: lines[index - 1].content, text: text, in: storage)
+                styleInline(text, line: line.content, in: storage, active: active)
+                index += 1
+                continue
+            }
             styleBlock(text, line: line.content, in: storage, active: active)
             styleInline(text, line: line.content, in: storage, active: active)
+            if let toggle = foldStarts[line.full.location] {
+                storage.addAttribute(.maBlock, value: ListFoldDecoration(indentLength: toggle.indentLength), range: line.full)
+            }
             index += 1
         }
         return tables
+    }
+
+    /// たたんだトグルの子の行。文字を隠し、高さと前後の余白をなくす
+    private func hideFoldedLine(_ line: Line, in storage: NSTextStorage) {
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = 0.01
+        style.maximumLineHeight = 0.01
+        style.lineSpacing = 0
+        style.paragraphSpacing = 0
+        storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear, .paragraphStyle: style], range: line.full)
     }
 
     // MARK: - コードブロック
@@ -639,6 +669,64 @@ struct MarkdownStyler {
         let bracketWidth = "[ ]".size(withAttributes: [.font: checkboxFont]).width
         storage.addAttributes([.foregroundColor: NSColor.clear, .maCheckbox: state.rawValue, .font: checkboxFont], range: brackets)
         storage.addAttribute(.kern, value: 14 - bracketWidth, range: NSRange(location: NSMaxRange(brackets) - 1, length: 1))
+    }
+
+    /// 項目の続きの行（Shift+Enter で項目の中で改行した行）。行頭の空白を透明にし、本文を項目の本文の左端に揃える。
+    /// 空白を箇条書きの1段の幅で数えると、1段深い子の項目のように見えるので、空白の文字数によらず項目の本文の位置へ送る。
+    /// 項目との間は折り返した行と同じ行間にする
+    private func styleListContinuation(_ line: NSRange, owner: String, previous: NSRange, text: String, in storage: NSTextStorage) {
+        let target = listBodyOffset(of: owner)
+        let style = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
+        style.paragraphSpacing = 2
+        style.tabStops = []
+        style.defaultTabInterval = listIndentStep
+        style.headIndent = target
+        storage.addAttribute(.paragraphStyle, value: style, range: line)
+        if previous.length > 0,
+           let above = storage.attribute(.paragraphStyle, at: previous.location, effectiveRange: nil) as? NSParagraphStyle {
+            let tight = above.mutableCopy() as! NSMutableParagraphStyle
+            tight.paragraphSpacing = 0
+            storage.addAttribute(.paragraphStyle, value: tight, range: previous)
+        }
+        // 空白を透明の細いフォントにし、最後の空白の字間で本文の位置まで送る。タブは1段ごとのタブ位置へ進む
+        let string = text as NSString
+        let whitespace = (ListLine.leadingWhitespace(string.substring(with: line)) as NSString).length
+        guard whitespace > 0 else { return }
+        // 完了した項目の続きは、項目の行と同じく薄くして打ち消し線を引く
+        if let checkbox = ListLine.marker(of: owner)?.checkbox, !checkbox.hasPrefix("[ ]") {
+            storage.addAttributes([
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+            ], range: NSRange(location: line.location + whitespace, length: line.length - whitespace))
+        }
+        storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear],
+                              range: NSRange(location: line.location, length: whitespace))
+        var x: CGFloat = 0
+        for offset in 0..<(whitespace - 1) where string.character(at: line.location + offset) == 0x09 {
+            x = (floor(x / listIndentStep) + 1) * listIndentStep
+        }
+        storage.addAttribute(.kern, value: max(0, target - x), range: NSRange(location: line.location + whitespace - 1, length: 1))
+    }
+
+    /// 項目の行の本文の左端の位置。カーソルが外にあるときの表示（記号を中黒やチェックボックスにした表示）で測る
+    private func listBodyOffset(of item: String) -> CGFloat {
+        guard let marker = ListLine.marker(of: item) else { return 0 }
+        func width(_ string: String, _ font: NSFont) -> CGFloat {
+            (string as NSString).size(withAttributes: [.font: font]).width
+        }
+        // 行頭の空白は styleBlock と同じく、空白2つとタブ1つを1段の幅で数える
+        var x: CGFloat = 0
+        for character in marker.indent {
+            x = character == "\t" ? (floor(x / listIndentStep) + 1) * listIndentStep : x + listIndentStep / 2
+        }
+        if let checkbox = marker.checkbox {
+            // 記号は隠れ、`[ ]` は字間でチェックボックスの幅（14pt）に揃える（hideCheckboxBrackets と同じ計算。`[x]` は少し広くなる）
+            let brackets = width(String(checkbox.prefix(3)), checkboxFont) + 14 - width("[ ]", checkboxFont)
+            x += width(marker.spacing, bodyFont) + brackets + width(String(checkbox.dropFirst(3)), bodyFont)
+        } else {
+            x += width(marker.bullet + marker.spacing, bodyFont)
+        }
+        return x
     }
 
     private func styleBlock(_ text: String, line: NSRange, in storage: NSTextStorage, active: Bool) {

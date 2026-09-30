@@ -65,7 +65,6 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     override func loadView() {
         let buttons = NSStackView()
         buttons.orientation = .horizontal
-        // 開閉ボタンの位置は `TrafficLights.sidebarToggleLeading` と一致させる
         buttons.spacing = 4
         for (mode, symbol, label) in [(Mode.files, "folder", "ファイル"), (.bookmarks, "star", "お気に入り")] {
             let button = NSButton(image: Self.centeredSymbol(symbol, label: label), target: self, action: #selector(modeButtonClicked(_:)))
@@ -78,7 +77,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             modeButtons[mode] = button
             buttons.addArrangedSubview(button)
         }
-        // 一覧の切り替えとは役割が違うので、間を空けて右側に置く
+        // 一覧の切り替えとは役割が違うので、サイドバーの右端に置く
         let toggle = NSButton(image: Self.centeredSymbol("sidebar.left", label: "サイドバーを閉じる"),
                               target: self, action: #selector(toggleSidebarClicked(_:)))
         toggle.isBordered = false
@@ -86,8 +85,6 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         toggle.contentTintColor = .secondaryLabelColor
         toggle.widthAnchor.constraint(equalToConstant: TrafficLights.sidebarToggleWidth).isActive = true
         toggle.toolTip = "サイドバーを閉じる"
-        if let favorite = modeButtons[.bookmarks] { buttons.setCustomSpacing(TrafficLights.sidebarToggleGap, after: favorite) }
-        buttons.addArrangedSubview(toggle)
 
         func makeList(_ outlineView: NSOutlineView) -> NSScrollView {
             let column = NSTableColumn(identifier: .init("name"))
@@ -122,6 +119,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         searchField.delegate = self
         // 既定では入力の途中でも action が送られる。開くのは Return と行のクリックだけにする
         searchField.sendsWholeSearchString = true
+        // 既定の regular では細く窮屈に見える。高さの制約だけだと文字が上に寄るので、large で縦幅を広げる
+        searchField.controlSize = .large
 
         emptyBookmarksLabel.textColor = .secondaryLabelColor
         emptyBookmarksLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -132,7 +131,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
         let container = NSView()
         let lists = (Array(scrollViews.values) + [searchScrollView]).map { $0 as NSView }
-        for view in [buttons, searchField, separator, calendarView, emptyBookmarksLabel] + lists {
+        for view in [buttons, toggle, searchField, separator, calendarView, emptyBookmarksLabel] + lists {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -142,6 +141,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             // 信号機ボタンの右に、タブの文字と同じ高さで並べる（上に余白を取る）
             buttons.centerYAnchor.constraint(equalTo: container.topAnchor, constant: TrafficLights.centerY),
             buttons.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: TrafficLights.sidebarButtonsLeading),
+            // 開閉ボタンは同じ高さで右端に置き、サイドバーの幅を変えても右端に付いていく
+            toggle.centerYAnchor.constraint(equalTo: buttons.centerYAnchor),
+            toggle.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -TrafficLights.sidebarToggleTrailing),
             searchField.topAnchor.constraint(equalTo: container.topAnchor, constant: TabBarView.height + 4),
             searchField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
             searchField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),

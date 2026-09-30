@@ -63,13 +63,11 @@ final class TabBarView: NSView {
 
     private var midY: CGFloat { tabTop + (bounds.height - tabTop) / 2 }
 
-    /// サイドバーの閉じるボタンと同じ位置（フルスクリーンでは信号機ボタンがないので左端）に置く
+    /// 信号機ボタンのすぐ右（フルスクリーンでは信号機ボタンがないので左端）に置く
     private var sidebarRect: CGRect? {
         guard showsSidebarButton else { return nil }
         let width = TrafficLights.sidebarToggleWidth
-        let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
-        let x = fullScreen ? 8 : max(8, TrafficLights.sidebarToggleLeading - convert(NSPoint.zero, to: nil).x)
-        return CGRect(x: x, y: midY - width / 2, width: width, height: width)
+        return CGRect(x: leadingInset, y: midY - width / 2, width: width, height: width)
     }
 
     private var backRect: CGRect {
@@ -246,6 +244,10 @@ final class TabBarView: NSView {
     }
 
     private func setHovered(_ target: Target?) {
+        // タイトルバーの高さ（上端から 28pt）の中は、mouseDown がこのビューに届いても、ウィンドウサーバーが同時にウィンドウを動かしてしまう。
+        // mouseDownCanMoveWindow はタイトルバーの領域に重ねた本文側のビューには効かない。
+        // タブやボタンの上にいる間だけウィンドウを動かせないようにし、何もないところでは従来どおり performDrag で動かす
+        window?.isMovable = target == nil
         guard target != hovered else { return }
         hovered = target
         needsDisplay = true
