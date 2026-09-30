@@ -5,7 +5,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let vault = Vault()
     private let sidebar = SidebarViewController()
     private let editor = EditorAreaViewController()
-    private let quickOpen = QuickOpenPanel()
     private var window: NSWindow!
     private var sidebarCollapsedObservation: NSKeyValueObservation?
     private static let sidebarCollapsedKey = "sidebarCollapsed"
@@ -309,12 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func openFolder(_ sender: Any?) { vault.chooseFolder() }
-    @objc func showFileSearch(_ sender: Any?) {
-        guard let root = vault.root else { return }
-        quickOpen.show(files: FileNode.files(in: vault.tree), root: root, from: window) { [vault] url, newTab in
-            vault.open(url, newTab: newTab)
-        }
-    }
+    @objc func showFileSearch(_ sender: Any?) { sidebar.focusSearch() }
     @objc func save(_ sender: Any?) { vault.saveNow() }
     @objc func newTab(_ sender: Any?) { vault.newTab() }
     /// 何も開いていないタブが1つだけなら、ウィンドウを閉じる
@@ -348,7 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let file = NSMenu(title: "ファイル")
         file.addItem(withTitle: "新規タブ", action: #selector(newTab(_:)), keyEquivalent: "t")
         file.addItem(withTitle: "フォルダを開く…", action: #selector(openFolder(_:)), keyEquivalent: "o")
-        file.addItem(withTitle: "ファイルを検索…", action: #selector(showFileSearch(_:)), keyEquivalent: "p")
+        file.addItem(withTitle: "ファイルを検索", action: #selector(showFileSearch(_:)), keyEquivalent: "p")
         file.addItem(withTitle: "保存", action: #selector(save(_:)), keyEquivalent: "s")
         file.addItem(withTitle: "今日のデイリーノート", action: #selector(openTodayNote(_:)), keyEquivalent: "d")
         file.addItem(withTitle: "お気に入りに追加", action: #selector(toggleBookmark(_:)), keyEquivalent: "B")
@@ -367,7 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         edit.addItem(withTitle: "すべてを選択", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         edit.addItem(.separator())
         edit.addItem(withTitle: "プロパティを追加", action: #selector(EditorAreaViewController.addProperty(_:)), keyEquivalent: ";")
-        edit.addItem(withTitle: "AI へのコメントを追加…", action: #selector(EditorAreaViewController.addAIComment(_:)), keyEquivalent: "M")
+        edit.addItem(withTitle: "コメントを追加…", action: #selector(EditorAreaViewController.addAIComment(_:)), keyEquivalent: "M")
         edit.addItem(.separator())
         let find = edit.addItem(withTitle: "検索…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
         find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
@@ -418,9 +412,14 @@ enum TrafficLights {
     static let spacing: CGFloat = 20
     /// 緑のボタンの右端
     static let trailing: CGFloat = leading + spacing * 2 + 14
+    /// サイドバー上端のボタン（ファイル・お気に入り・開閉）の左端と、1つの幅
+    static let sidebarButtonsLeading: CGFloat = trailing + 15
+    static let sidebarButtonWidth: CGFloat = 26
+    /// 一覧の切り替えボタンと開閉ボタンの間
+    static let sidebarToggleGap: CGFloat = 12
     /// サイドバーの開閉ボタンの左端と幅。サイドバーを閉じたときもタブバーの同じ位置に出して、開閉でアイコンが動かないようにする
-    static let sidebarToggleLeading: CGFloat = trailing + 15
-    static let sidebarToggleWidth: CGFloat = 26
+    static let sidebarToggleLeading: CGFloat = sidebarButtonsLeading + sidebarButtonWidth * 2 + 4 + sidebarToggleGap
+    static let sidebarToggleWidth: CGFloat = sidebarButtonWidth
 }
 
 private extension NSMenu {

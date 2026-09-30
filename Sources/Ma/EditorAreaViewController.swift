@@ -66,11 +66,6 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         pathLabel.lineBreakMode = .byTruncatingHead
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
         pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        pathLabel.onCopy = { [weak pathLabel] in
-            guard let path = pathLabel?.path else { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(path, forType: .string)
-        }
         container.addSubview(pathLabel)
         NSLayoutConstraint.activate([
             // ☆と縦の中心を揃え、左端も☆の右端と同じだけ内側に置く
@@ -98,6 +93,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     func setNotePath(_ path: String?) {
         pathLabel.isHidden = path == nil
         pathLabel.path = path
+        pathLabel.cancelCopiedMessage()
         guard let path else { return }
         let name = (path as NSString).lastPathComponent
         // 区切りの両脇を空けて読みやすくする（`Tasks / Tickets / ノート名`）
@@ -245,14 +241,38 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     }
 }
 
-/// クリックすると表示中の vault 相対パスをコピーするラベル
+/// クリックすると表示中の vault 相対パスをコピーし、少しのあいだ「コピーしました」と出すラベル
 private final class CopyablePathLabel: NSTextField {
     var path: String?
-    var onCopy: (() -> Void)?
+    /// 「コピーしました」を出している間、元の表示を預かる
+    private var shownBeforeCopy: NSAttributedString?
+    private var copiedMessageTask: Task<Void, Never>?
+
+    /// パスが変わったら、コピー後の表示の復元をやめる（新しいパスの表示を上書きしないように）
+    func cancelCopiedMessage() {
+        copiedMessageTask?.cancel()
+        copiedMessageTask = nil
+        shownBeforeCopy = nil
+    }
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .pointingHand)
     }
 
-    override func mouseDown(with event: NSEvent) { onCopy?() }
+    override func mouseDown(with event: NSEvent) {
+        guard let path else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+        if shownBeforeCopy == nil { shownBeforeCopy = attributedStringValue }
+        stringValue = "コピーしました"
+        textColor = .secondaryLabelColor
+        copiedMessageTask?.cancel()
+        copiedMessageTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.2))
+            guard !Task.isCancelled, let self else { return }
+            if let shownBeforeCopy { attributedStringValue = shownBeforeCopy }
+            shownBeforeCopy = nil
+            copiedMessageTask = nil
+        }
+    }
 }

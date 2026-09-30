@@ -36,7 +36,8 @@ struct MarkdownStyler {
     private let tableRow = Self.regex(#"^[ \t]*\|"#)
     private let tableSeparator = Self.regex(#"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$"#)
     private let lineBreakTag = Self.regex(#"<br\s*/?>"#, options: [.caseInsensitive])
-    private let aiComment = Self.regex(#"^<!--\s*AI:\s*(.*?)\s*-->$"#, options: [.caseInsensitive])
+    /// `==選択した文字==<!-- AI: コメント -->`。1 は選んだ文字、2 はコメント、3 は `<!-- … -->` 全体
+    private let aiComment = Self.regex(#"==(?=\S)((?:(?!==)[^\n])+?)(?<=\S)==(<!--\s*AI:\s*([^\n]*?)\s*-->)"#)
 
     private struct Line {
         let full: NSRange
@@ -96,22 +97,6 @@ struct MarkdownStyler {
         while index < lines.count {
             let line = lines[index]
             let active = isActive(line.full)
-
-            if let match = aiComment.firstMatch(in: text, range: line.content) {
-                let body = match.range(at: 1)
-                if !active {
-                    let prefix = NSRange(location: line.content.location, length: body.location - line.content.location)
-                    let suffix = NSRange(location: NSMaxRange(body), length: NSMaxRange(line.content) - NSMaxRange(body))
-                    storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear], range: prefix)
-                    storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear], range: suffix)
-                }
-                storage.addAttributes([
-                    .foregroundColor: NSColor.systemPurple,
-                    .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-                ], range: body)
-                index += 1
-                continue
-            }
 
             if let end = embedEnd(from: index, in: lines, text: text),
                !isActive(line.full.union(lines[end].full)),
@@ -625,6 +610,18 @@ struct MarkdownStyler {
                 with: String(repeating: "\u{FFFC}", count: match.range.length)
             )
         }
+        // AI へのコメントは、選んだ文字をハイライトし、コメントは隠してホバーで出す。コメントの中は他の記法として読まない
+        for match in aiComment.matches(in: masked as String, range: NSRange(location: 0, length: masked.length)) {
+            let whole = match.range.offset(by: line.location)
+            let body = match.range(at: 1).offset(by: line.location)
+            let comment = match.range(at: 2).offset(by: line.location)
+            let note = string.substring(with: match.range(at: 3).offset(by: line.location))
+            storage.addAttributes([.backgroundColor: NSColor.maAIComment, .toolTip: "AI へのコメント: \(note)"], range: body)
+            marker(NSRange(location: whole.location, length: 2), in: storage, active: active)
+            marker(NSRange(location: NSMaxRange(body), length: 2), in: storage, active: active)
+            marker(comment, in: storage, active: active)
+            masked.replaceCharacters(in: match.range(at: 2), with: String(repeating: "\u{FFFC}", count: comment.length))
+        }
         let maskedText = masked as String
         func matches(_ regex: NSRegularExpression) -> [NSTextCheckingResult] {
             regex.matches(in: maskedText, range: NSRange(location: 0, length: masked.length))
@@ -714,4 +711,8 @@ struct MarkdownStyler {
     private static func regex(_ pattern: String, options: NSRegularExpression.Options = []) -> NSRegularExpression {
         try! NSRegularExpression(pattern: pattern, options: options)
     }
+}
+
+private extension NSRange {
+    func offset(by delta: Int) -> NSRange { NSRange(location: location + delta, length: length) }
 }

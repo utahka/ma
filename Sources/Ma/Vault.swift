@@ -358,7 +358,7 @@ final class Vault {
         saveNow()
         activeIndex = index
         tabsDidChange()
-        refreshExternalChanges()
+        reloadChangedNotes()
     }
 
     /// 閉じたのが選択中のタブなら右隣（右端なら左隣）を選ぶ。最後の1つを閉じたら空のタブを残す
@@ -475,8 +475,15 @@ final class Vault {
         pendingTexts = [:]
     }
 
-    /// アプリが前面に戻ったときやタブを切り替えたとき、外部で変わったファイルとプロパティ型を読み直す
+    /// アプリが前面に戻ったとき、外部で変わったノート・プロパティ型・ファイル一覧・お気に入りを読み直す
     func refreshExternalChanges() {
+        reloadChangedNotes()
+        rescan()
+        reloadBookmarks()
+    }
+
+    /// 開いているノートとプロパティ型のうち、外部で変わったものを読み直す。タブの切り替えのたびに呼ぶので vault 全体は走査しない
+    private func reloadChangedNotes() {
         var changed = propertyTypes?.reload() == true
         for tab in tabs where loadedTabs.contains(tab.id) {
             guard let url = tab.url, pendingTexts[url] == nil,
@@ -490,8 +497,6 @@ final class Vault {
                 loadedTabs.remove(tab.id)
             }
         }
-        rescan()
-        reloadBookmarks()
         if changed { onExternalChange?() }
     }
 
