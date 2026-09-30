@@ -741,7 +741,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         let caret = textView.selectedRange().location
         guard let table = tables.first(where: { NSLocationInRange(caret, $0.tableRange) || caret == $0.endOfLastRow }),
               let (row, column) = table.cell(containing: caret)
-        else { return continueList(selector, at: caret) }
+        else { return breakCalloutLine(selector, at: caret) || continueList(selector, at: caret) }
         let columns = table.columnWidths.count
         switch selector {
         case #selector(NSResponder.insertTab(_:)):
@@ -771,6 +771,18 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         default:
             return false
         }
+        return true
+    }
+
+    /// コールアウトの中で Shift+Enter を押したら、次の行にも同じ深さの `>` を付けてコールアウトの中で改行する
+    private func breakCalloutLine(_ selector: Selector, at caret: Int) -> Bool {
+        let shiftReturn = selector == #selector(NSResponder.insertNewline(_:)) && NSApp.currentEvent?.modifierFlags.contains(.shift) == true
+        guard shiftReturn || selector == #selector(NSResponder.insertLineBreak(_:)),
+              let edit = CalloutLineBreak.edit(in: textView.string as NSString, caret: caret)
+        else { return false }
+        textView.replace(edit.range, with: edit.replacement, actionName: "改行")
+        textView.setSelectedRange(NSRange(location: edit.caret, length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
         return true
     }
 
