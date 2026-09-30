@@ -115,6 +115,11 @@ extension PropertySchema {
             item.state = .on
             menu.addItem(item)
         }
+        if menu.items.isEmpty {
+            let item = NSMenuItem(title: "選択肢がありません", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
         if kind == .select, !current.isEmpty {
             menu.addItem(.separator())
             menu.addItem(ActionMenuItem(title: "クリア") { choose(.scalar("")) })

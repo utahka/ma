@@ -456,3 +456,49 @@ extension BaseFile {
         return lines.joined(separator: "\n")
     }
 }
+
+// MARK: - プロパティの定義の追加
+
+extension BaseFile {
+    /// 全体の `properties:` の末尾に、`ma:` の型（select / multi-select / status）だけを持つプロパティを足した YAML を返す。
+    /// 選択肢は空のまま（`options` を書かない）。`properties:` がなければ `views:` の前に作る。
+    /// すでに同じプロパティの項目があれば何も変えない。`updatingColumns` と同じく行を足すだけで、形が想定と違えば nil
+    static func addingProperty(_ yaml: String, id: String, kind: PropertySchema.Kind) -> String? {
+        var lines = yaml.components(separatedBy: "\n")
+        func indent(_ line: String) -> Int { line.prefix { $0 == " " }.count }
+        func isBlank(_ line: String) -> Bool { line.trimmingCharacters(in: .whitespaces).isEmpty }
+        func entry(_ pad: String) -> [String] {
+            [pad + scalar(id) + ":", pad + "  ma:", pad + "    type: " + kind.rawValue]
+        }
+
+        guard let propertiesLine = lines.firstIndex(where: { $0.hasPrefix("properties:") }) else {
+            guard let viewsLine = lines.firstIndex(of: "views:") else { return nil }
+            lines.insert(contentsOf: ["properties:"] + entry("  "), at: viewsLine)
+            return lines.joined(separator: "\n")
+        }
+        // `properties: {}` のような書き方は扱わない
+        guard lines[propertiesLine].trimmingCharacters(in: .whitespaces) == "properties:" else { return nil }
+        var childIndent: Int?
+        var last = propertiesLine
+        for number in (propertiesLine + 1)..<lines.count {
+            let line = lines[number]
+            if isBlank(line) { continue }
+            let depth = indent(line)
+            if depth == 0 { break }
+            if childIndent == nil { childIndent = depth }
+            if depth == childIndent {
+                // 項目のキー（`note.ステータス:`）。引用符で囲んだ書き方も同じプロパティとみなす
+                var key = String(line.dropFirst(depth))
+                guard key.hasSuffix(":") else { return nil }
+                key.removeLast()
+                if key.count >= 2, let first = key.first, first == key.last, first == "\"" || first == "'" {
+                    key = String(key.dropFirst().dropLast())
+                }
+                if BaseExpression.propertyID(key) == id { return yaml }
+            }
+            last = number
+        }
+        lines.insert(contentsOf: entry(String(repeating: " ", count: childIndent ?? 2)), at: last + 1)
+        return lines.joined(separator: "\n")
+    }
+}
