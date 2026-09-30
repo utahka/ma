@@ -139,6 +139,7 @@ struct BaseFile {
         case "file.name", "file.basename": return "名前"
         case "file.path": return "パス"
         case "file.folder": return "フォルダ"
+        case "file.ext": return "拡張子"
         case "file.ctime": return "作成日時"
         case "file.mtime": return "更新日時"
         case "file.size": return "サイズ"
