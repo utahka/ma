@@ -6,6 +6,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let sidebar = SidebarViewController()
     private let editor = EditorAreaViewController()
     private var window: NSWindow!
+    private var sidebarCollapsedObservation: NSKeyValueObservation?
+    private static let sidebarCollapsedKey = "sidebarCollapsed"
 
     /// ファイルを渡されて起動したときは didFinishLaunching より先に open が呼ばれるので、画面はここで作る
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -32,6 +34,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // contentViewController を設定するとビューの最小サイズまで縮むので、設定後にサイズを戻す
         window.setContentSize(NSSize(width: 1100, height: 720))
         split.splitView.setPosition(260, ofDividerAt: 0)
+        // 閉じたサイドバーは次回の起動でも閉じたままにする
+        sidebarItem.isCollapsed = AppDefaults.shared.bool(forKey: Self.sidebarCollapsedKey)
+        editor.tabBar.showsSidebarButton = sidebarItem.isCollapsed
+        // メニュー・ボタン・⌃⌘S のどれで開閉しても記録し、タブバーの開くボタンを出し入れする
+        sidebarCollapsedObservation = sidebarItem.observe(\.isCollapsed, options: .new) { [editor] _, change in
+            let collapsed = change.newValue ?? false
+            MainActor.assumeIsolated {
+                AppDefaults.shared.set(collapsed, forKey: Self.sidebarCollapsedKey)
+                editor.tabBar.showsSidebarButton = collapsed
+            }
+        }
         window.center()
         window.setFrameAutosaveName("main")
         window.title = "Ma"
@@ -60,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         editor.tabBar.onNewTab = { [vault] in vault.newTab() }
         editor.tabBar.onBack = { [vault] in vault.goBack() }
         editor.tabBar.onForward = { [vault] in vault.goForward() }
+        editor.tabBar.onToggleSidebar = { [split] in split.toggleSidebar(nil) }
         vault.viewState = { [unowned self] tab in editor.viewState(of: tab) }
         vault.onTreeChange = { [unowned self] in
             sidebar.reload(vault.tree)
@@ -371,6 +385,9 @@ enum TrafficLights {
     static let spacing: CGFloat = 20
     /// 緑のボタンの右端
     static let trailing: CGFloat = leading + spacing * 2 + 14
+    /// サイドバーの開閉ボタンの左端と幅。サイドバーを閉じたときもタブバーの同じ位置に出して、開閉でアイコンが動かないようにする
+    static let sidebarToggleLeading: CGFloat = trailing + 15
+    static let sidebarToggleWidth: CGFloat = 26
 }
 
 private extension NSMenu {
