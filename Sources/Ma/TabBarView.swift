@@ -1,7 +1,8 @@
 import AppKit
 
 /// エディタの上端（タイトルバーの位置）に並べるタブ。Chrome のように、選択中のタブだけ本文と同じ色にしてつなげる。
-/// クリックで選択、× か中クリックで閉じる、ドラッグで並べ替え、何もないところのドラッグでウィンドウを動かす
+/// クリックで選択、× か中クリックで閉じる、ドラッグで並べ替え、何もないところのドラッグでウィンドウを動かす。
+/// 左端には選択中のタブの「戻る」「進む」を置く
 final class TabBarView: NSView {
     static let height: CGFloat = 34
 
@@ -11,6 +12,10 @@ final class TabBarView: NSView {
     var onClose: ((Int) -> Void)?
     var onMove: ((Int, Int) -> Void)?
     var onNewTab: (() -> Void)?
+    var canGoBack = false { didSet { needsDisplay = true } }
+    var canGoForward = false { didSet { needsDisplay = true } }
+    var onBack: (() -> Void)?
+    var onForward: (() -> Void)?
 
     private let maxTabWidth: CGFloat = 220
     private let minTabWidth: CGFloat = 60
@@ -19,7 +24,7 @@ final class TabBarView: NSView {
     private let buttonSize: CGFloat = 18
 
     private enum Target: Equatable {
-        case tab(Int), close(Int), newTab
+        case tab(Int), close(Int), newTab, back, forward
     }
     private var hovered: Target?
     private var pressed: Target?
@@ -46,14 +51,25 @@ final class TabBarView: NSView {
         return max(8, buttonsEnd - convert(NSPoint.zero, to: nil).x)
     }
 
+    private var midY: CGFloat { tabTop + (bounds.height - tabTop) / 2 }
+
+    private var backRect: CGRect {
+        CGRect(x: leadingInset, y: midY - buttonSize / 2, width: buttonSize, height: buttonSize)
+    }
+
+    private var forwardRect: CGRect { backRect.offsetBy(dx: buttonSize + 4, dy: 0) }
+
+    /// 最初のタブの左端
+    private var tabsStart: CGFloat { forwardRect.maxX + 8 }
+
     private var tabWidth: CGFloat {
         guard !titles.isEmpty else { return maxTabWidth }
-        let available = bounds.width - leadingInset - buttonSize - 16
+        let available = bounds.width - tabsStart - buttonSize - 16
         return min(maxTabWidth, max(minTabWidth, available / CGFloat(titles.count)))
     }
 
     private func tabRect(_ index: Int) -> CGRect {
-        var rect = CGRect(x: leadingInset + CGFloat(index) * tabWidth, y: tabTop, width: tabWidth, height: bounds.height - tabTop)
+        var rect = CGRect(x: tabsStart + CGFloat(index) * tabWidth, y: tabTop, width: tabWidth, height: bounds.height - tabTop)
         if let drag, drag.index == index { rect.origin.x += drag.offset }
         return rect
     }
@@ -64,8 +80,7 @@ final class TabBarView: NSView {
     }
 
     private var newTabRect: CGRect {
-        let x = leadingInset + CGFloat(titles.count) * tabWidth + 6
-        let midY = tabTop + (bounds.height - tabTop) / 2
+        let x = tabsStart + CGFloat(titles.count) * tabWidth + 6
         return CGRect(x: x, y: midY - buttonSize / 2, width: buttonSize, height: buttonSize)
     }
 
@@ -76,6 +91,8 @@ final class TabBarView: NSView {
 
     private func target(at point: NSPoint) -> Target? {
         if newTabRect.contains(point) { return .newTab }
+        if backRect.contains(point) { return .back }
+        if forwardRect.contains(point) { return .forward }
         for index in titles.indices where tabRect(index).contains(point) {
             // マウスが乗ったタブには × が出るので、位置だけで判定する
             return closeRect(index).insetBy(dx: -2, dy: -2).contains(point) ? .close(index) : .tab(index)
@@ -95,6 +112,8 @@ final class TabBarView: NSView {
         if titles.indices.contains(selectedIndex), selectedIndex != drag?.index { drawTab(selectedIndex) }
         if let drag { drawTab(drag.index) }
         drawButton(in: newTabRect, highlighted: hovered == .newTab, symbol: "plus")
+        drawButton(in: backRect, highlighted: canGoBack && hovered == .back, symbol: "chevron.left", enabled: canGoBack)
+        drawButton(in: forwardRect, highlighted: canGoForward && hovered == .forward, symbol: "chevron.right", enabled: canGoForward)
     }
 
     private func drawTab(_ index: Int) {
@@ -149,13 +168,17 @@ final class TabBarView: NSView {
         return path
     }
 
-    private func drawButton(in rect: CGRect, highlighted: Bool, symbol: String) {
+    private func drawButton(in rect: CGRect, highlighted: Bool, symbol: String, enabled: Bool = true) {
         if highlighted {
             NSColor.labelColor.withAlphaComponent(0.1).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
         }
-        let configuration = NSImage.SymbolConfiguration(pointSize: symbol == "plus" ? 11 : 9, weight: .semibold)
-            .applying(.init(hierarchicalColor: .secondaryLabelColor))
+        let pointSize: CGFloat = switch symbol {
+        case "plus", "chevron.left", "chevron.right": 11
+        default: 9
+        }
+        let configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
+            .applying(.init(hierarchicalColor: enabled ? .secondaryLabelColor : .quaternaryLabelColor))
         guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(configuration)
         else { return }
@@ -186,7 +209,12 @@ final class TabBarView: NSView {
         guard target != hovered else { return }
         hovered = target
         needsDisplay = true
-        if case .tab(let index) = target { toolTip = titles[index] } else { toolTip = nil }
+        switch target {
+        case .tab(let index)?: toolTip = titles[index]
+        case .back?: toolTip = "戻る"
+        case .forward?: toolTip = "進む"
+        default: toolTip = nil
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -213,8 +241,8 @@ final class TabBarView: NSView {
         if abs(drag.offset) > 3 { drag.moved = true }
         guard drag.moved else { return }
         // ドラッグ中のタブの中心が隣のタブの位置に入ったら入れ替える
-        let center = leadingInset + (CGFloat(drag.index) + 0.5) * tabWidth + drag.offset
-        let destination = min(max(Int((center - leadingInset) / tabWidth), 0), titles.count - 1)
+        let center = tabsStart + (CGFloat(drag.index) + 0.5) * tabWidth + drag.offset
+        let destination = min(max(Int((center - tabsStart) / tabWidth), 0), titles.count - 1)
         let source = drag.index
         if destination != source {
             // 入れ替えた先の位置を起点にし直し、タブがマウスの下に留まるようにする
@@ -232,6 +260,8 @@ final class TabBarView: NSView {
             switch pressed {
             case .close(let index): onClose?(index)
             case .newTab: onNewTab?()
+            case .back: if canGoBack { onBack?() }
+            case .forward: if canGoForward { onForward?() }
             case .tab: break
             }
         }

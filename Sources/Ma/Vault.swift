@@ -27,12 +27,30 @@ enum AppDefaults {
 struct OpenDocument {
     let url: URL
     let text: String
+    /// 戻る・進むで開いたときに復元する表示位置
+    var viewState: NoteViewState? = nil
+}
+
+/// ノートのカーソルとスクロールの位置
+struct NoteViewState {
+    var selection: NSRange
+    /// 画面の上端にある文字の位置
+    var topCharacter: Int
+}
+
+/// 戻る・進むの行き先
+struct HistoryEntry {
+    let url: URL
+    var viewState: NoteViewState?
 }
 
 /// タブ。`url` が nil のときは何も開いていない新しいタブ
 struct Tab: Identifiable {
     let id = UUID()
     var url: URL?
+    /// タブの中でノートを切り替えた履歴。新しいものが末尾
+    var back: [HistoryEntry] = []
+    var forward: [HistoryEntry] = []
 
     var title: String { url?.deletingPathExtension().lastPathComponent ?? "新しいタブ" }
 }
@@ -57,11 +75,15 @@ final class Vault {
     /// vault を開いたときとデイリーノートを作ったとき（カレンダーの点を打ち直す）
     var onNotesChange: (() -> Void)?
     var onBookmarksChange: (() -> Void)?
+    /// タブで開いているノートの今の表示位置。別のノートに切り替える前に履歴へ残す
+    var viewState: ((Tab.ID) -> NoteViewState?)?
 
     private var pendingTexts: [URL: String] = [:]
     private var saveTask: Task<Void, Never>?
     /// 中身を読み込み済みのタブ。復元したタブは選ばれたときに読む
     private var loadedTabs: Set<Tab.ID> = []
+    /// 戻る・進むで開いたタブの、読み込んだときに復元する表示位置
+    private var restoringViewStates: [Tab.ID: NoteViewState] = [:]
     /// 次回の起動で開く vault のときだけ、開いているタブも記録する
     private var remembersTabs = false
     /// 最後に読んだ bookmarks.json の中身（nil はファイルがない）。変わっていなければ読み直さない
@@ -225,9 +247,43 @@ final class Vault {
             activeIndex += 1
             tabs.insert(Tab(url: url), at: activeIndex)
         } else {
+            if let current = activeTab.url {
+                tabs[activeIndex].back.append(HistoryEntry(url: current, viewState: viewState?(activeTab.id)))
+                tabs[activeIndex].forward = []
+            }
             tabs[activeIndex].url = url
             loadedTabs.remove(activeTab.id)
         }
+        tabsDidChange()
+    }
+
+    var canGoBack: Bool { activeTab.back.contains(where: canNavigate) }
+    var canGoForward: Bool { activeTab.forward.contains(where: canNavigate) }
+
+    func goBack() { navigate(forward: false) }
+    func goForward() { navigate(forward: true) }
+
+    /// 消えたファイルと、ほかのタブで開いているファイル（同じファイルは2つのタブで開かない）は飛ばす
+    private func canNavigate(to entry: HistoryEntry) -> Bool {
+        FileManager.default.fileExists(atPath: entry.url.path)
+            && !tabs.contains { $0.id != activeTab.id && $0.url?.path == entry.url.path }
+    }
+
+    private func navigate(forward: Bool) {
+        var tab = activeTab
+        guard let current = tab.url else { return }
+        var entry: HistoryEntry?
+        while entry == nil, let candidate = forward ? tab.forward.popLast() : tab.back.popLast() {
+            if canNavigate(to: candidate) { entry = candidate }
+        }
+        guard let entry else { return }
+        saveNow()
+        let leaving = HistoryEntry(url: current, viewState: viewState?(tab.id))
+        if forward { tab.back.append(leaving) } else { tab.forward.append(leaving) }
+        tab.url = entry.url
+        tabs[activeIndex] = tab
+        loadedTabs.remove(tab.id)
+        restoringViewStates[tab.id] = entry.viewState
         tabsDidChange()
     }
 
@@ -269,7 +325,8 @@ final class Vault {
             loadedTabs.insert(tab.id)
             if let url = tab.url {
                 do {
-                    onLoad?(tab.id, OpenDocument(url: url, text: try String(contentsOf: url, encoding: .utf8)))
+                    let text = try String(contentsOf: url, encoding: .utf8)
+                    onLoad?(tab.id, OpenDocument(url: url, text: text, viewState: restoringViewStates.removeValue(forKey: tab.id)))
                 } catch {
                     NSLog("読み込みに失敗: \(url.path): \(error)")
                     onLoad?(tab.id, nil)
