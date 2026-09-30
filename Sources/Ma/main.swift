@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let split = NSSplitViewController()
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
-        sidebarItem.minimumThickness = 180
+        sidebarItem.minimumThickness = 200
         let editorItem = NSSplitViewItem(viewController: editor)
         // タイトルバーの下にタブを並べるので、タイトルバーと本文の区切り線は出さない
         for item in [sidebarItem, editorItem] {
@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentMinSize = NSSize(width: 720, height: 480)
         // contentViewController を設定するとビューの最小サイズまで縮むので、設定後にサイズを戻す
         window.setContentSize(NSSize(width: 1100, height: 720))
+        split.splitView.setPosition(260, ofDividerAt: 0)
         window.center()
         window.setFrameAutosaveName("main")
         window.title = "Ma"

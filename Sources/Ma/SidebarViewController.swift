@@ -36,17 +36,19 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
+        // ファイルツリーとカレンダーを窓の縁から離す余白
+        let padding: CGFloat = 10
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            separator.topAnchor.constraint(equalTo: scrollView.bottomAnchor),
-            separator.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            calendarView.topAnchor.constraint(equalTo: separator.bottomAnchor),
-            calendarView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            calendarView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            calendarView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+            separator.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: padding),
+            separator.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+            separator.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+            calendarView.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: padding / 2),
+            calendarView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+            calendarView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+            calendarView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -padding),
             calendarView.heightAnchor.constraint(equalToConstant: CalendarView.preferredHeight),
         ])
         view = container
@@ -118,6 +120,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let image = NSImageView()
         let text = NSTextField(labelWithString: "")
         text.lineBreakMode = .byTruncatingTail
+        text.textColor = .maText
         for view in [image, text] {
             view.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(view)

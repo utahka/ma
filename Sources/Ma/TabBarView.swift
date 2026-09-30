@@ -119,7 +119,7 @@ final class TabBarView: NSView {
         paragraph.lineBreakMode = .byTruncatingTail
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12),
-            .foregroundColor: selected ? NSColor.labelColor : NSColor.secondaryLabelColor,
+            .foregroundColor: selected ? NSColor.maText : NSColor.secondaryLabelColor,
             .paragraphStyle: paragraph,
         ]
         let title = NSAttributedString(string: titles[index], attributes: attributes)

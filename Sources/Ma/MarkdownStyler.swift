@@ -36,7 +36,7 @@ struct MarkdownStyler {
     }
 
     var baseAttributes: [NSAttributedString.Key: Any] {
-        [.font: bodyFont, .foregroundColor: NSColor.textColor, .paragraphStyle: paragraphStyle]
+        [.font: bodyFont, .foregroundColor: NSColor.maText, .paragraphStyle: paragraphStyle]
     }
 
     /// 装飾をかけ直し、文書中の表を返す。`availableWidth` は本文の幅で、表が収まらないときの縮小に使う。
@@ -408,6 +408,7 @@ struct MarkdownStyler {
         if let match = heading.firstMatch(in: text, range: line) {
             let level = match.range(at: 1).length
             storage.addAttribute(.font, value: NSFont.systemFont(ofSize: headingSizes[level], weight: .bold), range: line)
+            storage.addAttribute(.foregroundColor, value: NSColor.maStrongText, range: line)
             // h1・h2 は上下に余白を空け、前後の本文と区切る。文書の先頭の見出しには上の余白を付けない
             if level <= 2 {
                 let style = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
@@ -422,6 +423,10 @@ struct MarkdownStyler {
         } else if rule.firstMatch(in: text, range: line) != nil {
             storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: line)
         } else if let match = listMarker.firstMatch(in: text, range: line) {
+            // 箇条書きとタスクは項目どうしの間を少し空ける（通常の段落よりは詰める）
+            let style = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
+            style.paragraphSpacing = 5
+            storage.addAttribute(.paragraphStyle, value: style, range: line)
             let checkbox = match.range(at: 2)
             guard checkbox.location != NSNotFound else {
                 let bullet = match.range(at: 1)
@@ -447,7 +452,7 @@ struct MarkdownStyler {
                 ], range: rest)
             }
         } else if line.length > 0 {
-            // 通常の段落は下に余白を空ける（箇条書きは詰めたまま。空行は元から間隔になる）
+            // 通常の段落は下に余白を空ける（空行は元から間隔になる）
             let style = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
             style.paragraphSpacing = 6
             storage.addAttribute(.paragraphStyle, value: style, range: line)
@@ -470,6 +475,7 @@ struct MarkdownStyler {
 
         for match in matches(bold) {
             addTrait(.boldFontMask, range: match.range, in: storage)
+            lightenBoldText(match.range, in: storage)
             wrapMarkers(match.range, length: 2, in: storage, active: active)
         }
         for match in matches(italic) {
@@ -513,6 +519,15 @@ struct MarkdownStyler {
     private func wrapMarkers(_ range: NSRange, length: Int, in storage: NSTextStorage, active: Bool) {
         marker(NSRange(location: range.location, length: length), in: storage, active: active)
         marker(NSRange(location: NSMaxRange(range) - length, length: length), in: storage, active: active)
+    }
+
+    /// 太字は線が太いぶん濃く見えるので、本文の色のままの部分だけ少し明るくする（リンクなどの色は残す）
+    private func lightenBoldText(_ range: NSRange, in storage: NSTextStorage) {
+        storage.enumerateAttribute(.foregroundColor, in: range) { value, subrange, _ in
+            if value as? NSColor == .maText {
+                storage.addAttribute(.foregroundColor, value: NSColor.maStrongText, range: subrange)
+            }
+        }
     }
 
     private func addTrait(_ trait: NSFontTraitMask, range: NSRange, in storage: NSTextStorage) {

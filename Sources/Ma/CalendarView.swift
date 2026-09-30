@@ -30,6 +30,7 @@ final class CalendarView: NSView {
         super.init(frame: frame)
 
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .maText
         let previous = makeButton(symbol: "chevron.left", label: "前の月", action: #selector(showPreviousMonth))
         let next = makeButton(symbol: "chevron.right", label: "次の月", action: #selector(showNextMonth))
         let today = NSButton(title: "今日", target: self, action: #selector(showToday))
@@ -148,7 +149,7 @@ final class CalendarView: NSView {
                 NSBezierPath(roundedRect: highlight, xRadius: 5, yRadius: 5).fill()
             }
 
-            let color: NSColor = isToday ? .controlAccentColor : isCurrentMonth ? .labelColor : .tertiaryLabelColor
+            let color: NSColor = isToday ? .controlAccentColor : isCurrentMonth ? .maText : .tertiaryLabelColor
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: isToday ? .bold : .regular),
                 .foregroundColor: color,
