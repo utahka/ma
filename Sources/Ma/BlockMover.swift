@@ -119,6 +119,39 @@ struct BlockMover {
         return (text, location)
     }
 
+    /// Tab・Shift+Tab でリスト項目を1段ずらした結果。`selection` の行から始まる項目（なければカーソル行を含む項目）と、
+    /// その子の行が対象。`lines` の範囲を `text` に置き換え、`shifts` は各行の行頭で増えた（負なら減った）文字数（UTF-16）。
+    /// リスト項目の行でなければ nil。動かせない（Shift+Tab で一番浅い）ときは何も変えない結果を返す
+    func shiftingListItems(in selection: ClosedRange<Int>, outdent: Bool)
+        -> (lines: ClosedRange<Int>, text: [String], shifts: [Int])? {
+        var items = blocks.filter { $0.kind == .listItem && selection.contains($0.lines.lowerBound) }
+        if items.isEmpty, let item = block(containing: selection.lowerBound), item.kind == .listItem { items = [item] }
+        guard !items.isEmpty else { return nil }
+        // 一番浅い項目は Shift+Tab で動かさず、子の項目も今の階層のまま残す
+        if outdent { items = items.filter { !$0.indent.isEmpty } }
+        guard let first = items.map(\.lines.lowerBound).min(),
+              let last = items.map(\.lines.upperBound).max()
+        else { return (selection.lowerBound...selection.lowerBound, [lines[selection.lowerBound]], [0]) }
+        let targets = Set(items.flatMap { Array($0.lines) })
+        let unit = Self.indentUnit(in: lines)
+        var text: [String] = []
+        var shifts: [Int] = []
+        for index in first...last {
+            let line = lines[index]
+            guard targets.contains(index), !Self.isBlank(line) else {
+                text.append(line); shifts.append(0); continue
+            }
+            if !outdent {
+                text.append(unit + line); shifts.append((unit as NSString).length); continue
+            }
+            // タブは1文字、空白は1段ぶん（文書の単位がタブなら空白2つ）まで外す
+            let removed = line.hasPrefix("\t") ? 1
+                : min(line.prefix { $0 == " " }.count, unit == "\t" ? 2 : unit.count)
+            text.append(String(line.dropFirst(removed))); shifts.append(-removed)
+        }
+        return (first...last, text, shifts)
+    }
+
     // MARK: - 内部
 
     private init(lines: [String]) {
