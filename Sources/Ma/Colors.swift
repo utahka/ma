@@ -12,6 +12,11 @@ extension NSColor {
             : NSColor(srgbRed: 0x6A / 255, green: 0x86 / 255, blue: 0x95 / 255, alpha: 1)
     }
 
+    /// Obsidian のハイライト `==文字==` の背景。Obsidian の既定（rgba(255, 208, 0, 0.4)）に合わせ、ダークでは文字が沈まないよう少し薄くする
+    static let maHighlight = NSColor(name: "maHighlight") { appearance in
+        NSColor(srgbRed: 1, green: 208 / 255, blue: 0, alpha: appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? 0.3 : 0.4)
+    }
+
     /// AI へのコメントを付けた箇所の背景。Obsidian の `==` のハイライト（黄色）と見分けられるよう紫にする
     static let maAIComment = NSColor.systemPurple.withAlphaComponent(0.18)
 
