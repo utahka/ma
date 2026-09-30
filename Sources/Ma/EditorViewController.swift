@@ -108,7 +108,9 @@ final class EditorTextView: NSTextView {
         let point = convert(event.locationInWindow, from: nil)
         updateAddRowButton(at: point)
         blockDrag.hover(at: point)
-        if columnEdge(at: point) != nil {
+        if blockDrag.isOnHandle(point) {
+            NSCursor.openHand.set()
+        } else if columnEdge(at: point) != nil {
             NSCursor.resizeLeftRight.set()
         } else if checkbox(at: point) != nil || link(at: point) != nil {
             NSCursor.pointingHand.set()
