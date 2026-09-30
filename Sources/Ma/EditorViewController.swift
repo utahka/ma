@@ -618,7 +618,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         let caret = textView.selectedRange().location
         guard let table = tables.first(where: { NSLocationInRange(caret, $0.tableRange) || caret == $0.endOfLastRow }),
               let (row, column) = table.cell(containing: caret)
-        else { return false }
+        else { return continueList(selector, at: caret) }
         let columns = table.columnWidths.count
         switch selector {
         case #selector(NSResponder.insertTab(_:)):
@@ -648,6 +648,18 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         default:
             return false
         }
+        return true
+    }
+
+    /// リスト項目で Enter を押したら次の項目を作る（空の項目ならリストを抜ける）。Shift+Enter は通常の改行
+    private func continueList(_ selector: Selector, at caret: Int) -> Bool {
+        guard selector == #selector(NSResponder.insertNewline(_:)),
+              NSApp.currentEvent?.modifierFlags.contains(.shift) != true,
+              let edit = ListContinuation.edit(in: textView.string as NSString, caret: caret)
+        else { return false }
+        textView.replace(edit.range, with: edit.replacement, actionName: "改行")
+        textView.setSelectedRange(NSRange(location: edit.caret, length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
         return true
     }
 
