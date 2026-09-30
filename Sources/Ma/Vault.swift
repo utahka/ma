@@ -61,6 +61,7 @@ final class Vault {
     private(set) var root: URL?
     private(set) var tree: [FileNode] = []
     private(set) var dailyNotes: DailyNotes?
+    private(set) var propertyTypes: PropertyTypes?
     /// 同じファイルを2つのタブで開くことはない（開こうとしたらそのタブに切り替える）
     private(set) var tabs = [Tab()]
     private(set) var activeIndex = 0
@@ -127,6 +128,7 @@ final class Vault {
         root = url
         tree = []
         dailyNotes = DailyNotes(root: url)
+        propertyTypes = PropertyTypes(root: url)
         remembersTabs = remember
         tabs = [Tab()]
         activeIndex = 0
@@ -400,7 +402,51 @@ final class Vault {
         pendingTexts = [:]
     }
 
-    /// 隠しファイル（.obsidian や .git）を除き、フォルダと .md だけを集める
+    /// 読み込んだ `.base`。更新日時が変わるまで使い回す
+    private var baseCache: [String: (modified: Date, base: BaseFile?)] = [:]
+
+    /// ノートが対象の `.base` に書かれた `ma:` の型。キーはプロパティ名（`note.` なし）。
+    /// 複数の `.base` に当てはまるときは合わせる（同じプロパティは先に見つけた方）
+    func propertySchemas(for url: URL, text: String) -> [String: PropertySchema] {
+        guard let root else { return [:] }
+        let bases = FileNode.files(in: tree).filter { $0.pathExtension.lowercased() == "base" }.compactMap(base(at:))
+        guard bases.contains(where: { !$0.schemas.isEmpty }) else { return [:] }
+        var properties: [String: PropertyValue] = [:]
+        for entry in Frontmatter.parse(text)?.entries ?? [] { properties[entry.key] = entry.value }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let note = NoteRecord(
+            url: url, path: String(url.path.dropFirst(root.path.count + 1)), properties: properties,
+            created: attributes?[.creationDate] as? Date ?? .distantPast,
+            modified: attributes?[.modificationDate] as? Date ?? .distantPast, size: text.utf8.count
+        )
+        let types = propertyTypes?.recorded ?? [:]
+        var result: [String: PropertySchema] = [:]
+        for base in bases where !base.schemas.isEmpty && base.contains(note, types: types) {
+            for (id, schema) in base.schemas where id.hasPrefix("note.") {
+                let key = String(id.dropFirst(5))
+                if result[key] == nil { result[key] = schema }
+            }
+        }
+        return result
+    }
+
+    private func base(at url: URL) -> BaseFile? {
+        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+        if let cached = baseCache[url.path], cached.modified == modified { return cached.base }
+        let base = (try? String(contentsOf: url, encoding: .utf8)).flatMap { try? BaseFile(yaml: $0) }
+        baseCache[url.path] = (modified, base)
+        return base
+    }
+
+    /// vault のノートをすべて読む（`.base` の表に使う）。書きかけの変更は先に保存する
+    func noteRecords() async -> [NoteRecord] {
+        guard let root else { return [] }
+        saveNow()
+        let urls = FileNode.notes(in: tree)
+        return await Task.detached { NoteRecord.load(urls, root: root) }.value
+    }
+
+    /// 隠しファイル（.obsidian や .git）を除き、フォルダと .md・.base だけを集める
     nonisolated static func scan(_ dir: URL) -> [FileNode] {
         let items = (try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
@@ -413,7 +459,7 @@ final class Vault {
                 if !children.isEmpty {
                     nodes.append(FileNode(url: url, isDirectory: true, children: children))
                 }
-            } else if url.pathExtension.lowercased() == "md" {
+            } else if ["md", "base"].contains(url.pathExtension.lowercased()) {
                 nodes.append(FileNode(url: url, isDirectory: false))
             }
         }
@@ -425,8 +471,15 @@ final class Vault {
 }
 
 extension FileNode: @unchecked Sendable {
-    /// ツリーの中のノートを並べる
+    var isBase: Bool { !isDirectory && url.pathExtension.lowercased() == "base" }
+
+    /// ツリーの中のファイル（.md と .base）を並べる
+    static func files(in nodes: [FileNode]) -> [URL] {
+        nodes.flatMap { $0.isDirectory ? files(in: $0.children) : [$0.url] }
+    }
+
+    /// ツリーの中のノート（.md）を並べる
     static func notes(in nodes: [FileNode]) -> [URL] {
-        nodes.flatMap { $0.isDirectory ? notes(in: $0.children) : [$0.url] }
+        nodes.flatMap { $0.isDirectory ? notes(in: $0.children) : $0.isBase ? [] : [$0.url] }
     }
 }

@@ -40,12 +40,14 @@ struct MarkdownStyler {
     }
 
     /// 装飾をかけ直し、文書中の表を返す。`availableWidth` は本文の幅で、表が収まらないときの縮小に使う。
-    /// `sourceMode` では装飾を外し、等幅フォントで Markdown をそのまま見せる
-    /// `draggedWidths` は列幅をドラッグ中の表の幅。区切り行の位置で表を特定し、区切り行から読んだ幅の代わりに使う
+    /// `sourceMode` では装飾を外し、等幅フォントで Markdown をそのまま見せる。
+    /// `draggedWidths` は列幅をドラッグ中の表の幅。区切り行の位置で表を特定し、区切り行から読んだ幅の代わりに使う。
+    /// `frontmatter` の範囲は文字を隠し、最初の行の高さを `height` にして、そこにプロパティ欄を重ねられるようにする
     @discardableResult
     func apply(
         to storage: NSTextStorage, activeRange: NSRange, availableWidth: CGFloat, sourceMode: Bool,
-        draggedWidths: (separator: Int, widths: [CGFloat])? = nil
+        draggedWidths: (separator: Int, widths: [CGFloat])? = nil,
+        frontmatter: (range: NSRange, height: CGFloat)? = nil
     ) -> [TableLayout] {
         let text = storage.string
         let string = text as NSString
@@ -70,6 +72,17 @@ struct MarkdownStyler {
         var tables: [TableLayout] = []
         var inFence = false
         var index = 0
+        if let frontmatter {
+            let hidden = lines.prefix { NSMaxRange($0.full) <= NSMaxRange(frontmatter.range) }
+            for (offset, line) in hidden.enumerated() {
+                let height = offset == 0 ? frontmatter.height : 0.01
+                let style = NSMutableParagraphStyle()
+                style.minimumLineHeight = height
+                style.maximumLineHeight = height
+                storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear, .paragraphStyle: style], range: line.full)
+            }
+            index = hidden.count
+        }
         while index < lines.count {
             let line = lines[index]
             let active = isActive(line.full)

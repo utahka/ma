@@ -1,18 +1,25 @@
 import AppKit
 
-/// タブバーと、タブごとのエディタ。選択中のタブのエディタだけを表示し、ほかのタブのエディタは画面から外して取っておく
+/// タブバーと、タブごとの中身（ノートのエディタか `.base` の表）。選択中のタブの中身だけを表示し、ほかのタブの中身は画面から外して取っておく
 final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     let tabBar = TabBarView()
     var onChange: ((URL, String) -> Void)?
     var onOpenLink: ((LinkTarget, _ newTab: Bool) -> Void)?
+    var onOpenNote: ((URL, _ newTab: Bool) -> Void)?
+    var propertyTypes: () -> PropertyTypes? = { nil }
+    var loadNotes: () async -> [NoteRecord] = { [] }
+    var propertySchemas: (_ url: URL, _ text: String) -> [String: PropertySchema] = { _, _ in [:] }
 
     private let content = NSView()
-    private var editors: [Tab.ID: EditorViewController] = [:]
-    private weak var shown: EditorViewController?
+    private var contents: [Tab.ID: NSViewController] = [:]
+    private weak var shown: NSViewController?
 
     private static let sourceModeKey = "sourceMode"
     /// ソース表示（装飾なし）かどうか。⌘E で全タブまとめて切り替え、次回の起動にも引き継ぐ
     private var sourceMode = AppDefaults.shared.bool(forKey: sourceModeKey)
+
+    private var editors: [EditorViewController] { contents.values.compactMap { $0 as? EditorViewController } }
+    private var bases: [BaseViewController] { contents.values.compactMap { $0 as? BaseViewController } }
 
     override func loadView() {
         let container = NSView()
@@ -34,58 +41,105 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     }
 
     func show(_ document: OpenDocument?, in tab: Tab.ID) {
-        editor(for: tab).show(document)
+        if let document, document.url.pathExtension.lowercased() == "base" {
+            content(for: tab, make: makeBase).show(document)
+        } else {
+            content(for: tab, make: makeEditor).show(document)
+        }
     }
 
     func viewState(of tab: Tab.ID) -> NoteViewState? {
-        editors[tab]?.viewState
+        (contents[tab] as? EditorViewController)?.viewState
     }
 
-    /// タブの並びと選択に合わせて、タブバーと表示するエディタを揃える。閉じたタブのエディタは捨てる
+    /// タブの並びと選択に合わせて、タブバーと表示する中身を揃える。閉じたタブの中身は捨てる
     func update(tabs: [Tab], activeIndex: Int, canGoBack: Bool, canGoForward: Bool) {
         tabBar.titles = tabs.map(\.title)
         tabBar.selectedIndex = activeIndex
         tabBar.canGoBack = canGoBack
         tabBar.canGoForward = canGoForward
         let ids = Set(tabs.map(\.id))
-        for (id, editor) in editors where !ids.contains(id) {
-            editor.view.removeFromSuperview()
-            editor.removeFromParent()
-            editors[id] = nil
-        }
-        let active = editor(for: tabs[activeIndex].id)
+        for (id, controller) in contents where !ids.contains(id) { discard(id, controller) }
+        let active = contents[tabs[activeIndex].id] ?? content(for: tabs[activeIndex].id, make: makeEditor)
         guard active !== shown else { return }
         shown?.view.removeFromSuperview()
         active.view.frame = content.bounds
         active.view.autoresizingMask = [.width, .height]
         content.addSubview(active.view)
         shown = active
-        active.focus()
+        if let editor = active as? EditorViewController { editor.focus() }
+        if let base = active as? BaseViewController {
+            // ほかのタブでノートを書き換えたかもしれないので、選ぶたびに読み直す
+            base.reload()
+            base.focus()
+        }
     }
 
-    private func editor(for tab: Tab.ID) -> EditorViewController {
-        if let editor = editors[tab] { return editor }
+    /// vault のファイルが変わったとき。開いている `.base` の表と、ノートのプロパティ欄の型を作り直す
+    func notesDidChange() {
+        for base in bases { base.reload() }
+        for editor in editors { editor.refreshSchemas() }
+    }
+
+    /// タブの中身が求める種類でなければ作り直す（同じタブでノートから `.base` に移ったときなど）
+    private func content<Controller: NSViewController>(for tab: Tab.ID, make: () -> Controller) -> Controller {
+        if let controller = contents[tab] as? Controller { return controller }
+        let controller = make()
+        if let old = contents[tab] {
+            let wasShown = old === shown
+            discard(tab, old)
+            if wasShown {
+                controller.view.frame = content.bounds
+                controller.view.autoresizingMask = [.width, .height]
+                content.addSubview(controller.view)
+                shown = controller
+            }
+        }
+        addChild(controller)
+        contents[tab] = controller
+        return controller
+    }
+
+    private func discard(_ tab: Tab.ID, _ controller: NSViewController) {
+        controller.view.removeFromSuperview()
+        controller.removeFromParent()
+        contents[tab] = nil
+    }
+
+    private func makeEditor() -> EditorViewController {
         let editor = EditorViewController()
         // 読み込み時に空の表示にするので、中身を渡す前に読み込んでおく
         editor.loadViewIfNeeded()
         editor.sourceMode = sourceMode
         editor.onChange = { [weak self] url, text in self?.onChange?(url, text) }
         editor.onOpenLink = { [weak self] target, newTab in self?.onOpenLink?(target, newTab) }
-        addChild(editor)
-        editors[tab] = editor
+        editor.propertyTypes = { [weak self] in self?.propertyTypes() }
+        editor.propertySchemas = { [weak self] url, text in self?.propertySchemas(url, text) ?? [:] }
         return editor
+    }
+
+    private func makeBase() -> BaseViewController {
+        let base = BaseViewController()
+        base.loadViewIfNeeded()
+        base.loadNotes = { [weak self] in await self?.loadNotes() ?? [] }
+        base.propertyTypes = { [weak self] in self?.propertyTypes()?.recorded ?? [:] }
+        base.onOpenNote = { [weak self] url, newTab in self?.onOpenNote?(url, newTab) }
+        return base
     }
 
     @objc func toggleSourceMode(_ sender: Any?) {
         sourceMode.toggle()
         AppDefaults.shared.set(sourceMode, forKey: Self.sourceModeKey)
-        for editor in editors.values { editor.sourceMode = sourceMode }
+        for editor in editors { editor.sourceMode = sourceMode }
     }
+
+    @objc func addProperty(_ sender: Any?) { (shown as? EditorViewController)?.addProperty() }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSourceMode(_:)) {
             menuItem.state = sourceMode ? .on : .off
         }
+        if menuItem.action == #selector(addProperty(_:)) { return shown is EditorViewController }
         return true
     }
 }
