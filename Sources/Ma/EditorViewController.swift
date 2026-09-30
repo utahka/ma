@@ -730,6 +730,14 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         editFrontmatter("プロパティの変更") { $0.setting(key, to: value, type: type) }
     }
 
+    /// `.base` の表からプロパティ名を変えたとき。新しい名前のキーがすでにあれば上書きせず false を返す
+    func renameProperty(_ key: String, to newKey: String) -> Bool {
+        let text = textView.string
+        guard let frontmatter = Frontmatter.parse(text), frontmatter.entry(key) != nil, frontmatter.entry(newKey) == nil else { return false }
+        editFrontmatter("プロパティ名の変更") { $0.renaming(key, to: newKey, in: text) }
+        return true
+    }
+
     /// ⌘; でプロパティを足す。フロントマターがなければ先頭に作る
     func addProperty() {
         guard url != nil else { return }

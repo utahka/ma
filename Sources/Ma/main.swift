@@ -67,6 +67,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             vault.saveNow()
         }
+        editor.onRenameProperty = { [vault, editor] urls, key, newKey in
+            // 保存を待っている編集を先に書き、ファイルを直接書き換えた分を古い本文で上書きしないようにする
+            vault.saveNow()
+            for url in urls where editor.renameProperty(in: url, from: key, to: newKey) == nil {
+                vault.renameProperty(in: url, from: key, to: newKey)
+            }
+            // 型が決めてあれば、新しい名前にも同じ型を付ける（ほかのノートが古い名前を使っているかもしれないので、古い方は残す）
+            if let types = vault.propertyTypes, let type = types.recorded[key], types.recorded[newKey] == nil {
+                types.set(type, for: newKey)
+            }
+            vault.saveNow()
+        }
         editor.tabBar.onSelect = { [vault] index in vault.selectTab(at: index) }
         editor.tabBar.onClose = { [vault] index in vault.closeTab(at: index) }
         editor.tabBar.onMove = { [vault] source, destination in vault.moveTab(from: source, to: destination) }
