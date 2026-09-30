@@ -58,10 +58,12 @@ struct MarkdownStyler {
     /// `frontmatter` の範囲は文字を隠し、最初の行の高さを `height` にして、そこにプロパティ欄を重ねられるようにする。
     /// `calloutIcons` が false ならコールアウトのタイトルの左のアイコンを描かない。
     /// `expandedCallouts` は開閉の印で開いた `[!note]-` の見出し行の先頭で、カーソルが外にあってもたたまない。
+    /// `selection` は選択範囲。表の1つのセルに収まっていれば、そのセルを表の形のまま編集できるように並べる
     /// `collapsedLists` はたたんで見せるトグル。子の行を高さのない行にして隠し、最初の行に ▸ を描かせる
     @discardableResult
     func apply(
         to storage: NSTextStorage, activeRange: NSRange, availableWidth: CGFloat, sourceMode: Bool,
+        selection: NSRange? = nil,
         draggedWidths: (separator: Int, widths: [CGFloat])? = nil,
         frontmatter: (range: NSRange, height: CGFloat)? = nil,
         calloutIcons: Bool = true, expandedCallouts: Set<Int> = [], collapsedLists: [ListToggle] = []
@@ -129,7 +131,7 @@ struct MarkdownStyler {
             if let end = tableEnd(from: index, in: lines, text: text) {
                 let block = Array(lines[index..<end])
                 tables.append(styleTable(block, text: text, in: storage, availableWidth: availableWidth,
-                                         draggedWidths: draggedWidths, isActive: isActive))
+                                         draggedWidths: draggedWidths, selection: selection, isActive: isActive))
                 index = end
                 continue
             }
@@ -253,7 +255,7 @@ struct MarkdownStyler {
     /// 文字を描き直さないので、カーソルを入れても表の形のまま通常のテキストとして編集できる
     private func styleTable(
         _ block: [Line], text: String, in storage: NSTextStorage, availableWidth: CGFloat,
-        draggedWidths: (separator: Int, widths: [CGFloat])?, isActive: (NSRange) -> Bool
+        draggedWidths: (separator: Int, widths: [CGFloat])?, selection: NSRange?, isActive: (NSRange) -> Bool
     ) -> TableLayout {
         let string = text as NSString
         let padding = TableRowDecoration.cellPadding
@@ -270,10 +272,21 @@ struct MarkdownStyler {
             (line: line, isHeader: offset == 0, cells: tableSegments(line.content, in: string))
         }
         let columnCount = rows[0].cells.count
+        // カーソルのあるセル（行の番号と列）。選択が1つのセルに収まるときだけ
+        var live: (row: Int, column: Int)?
+        if let selection,
+           let rowIndex = rows.firstIndex(where: { $0.line.full.location <= selection.location && selection.location <= NSMaxRange($0.line.content) }),
+           NSMaxRange(selection) <= NSMaxRange(rows[rowIndex].line.content) {
+            let cells = rows[rowIndex].cells
+            // 先頭の縦棒の前は最初のセル、末尾の縦棒の後ろは最後のセルとみなす
+            func column(at location: Int) -> Int { cells.firstIndex { location <= NSMaxRange($0) } ?? cells.count - 1 }
+            let start = column(at: selection.location)
+            if !cells.isEmpty, start < columnCount, start == column(at: NSMaxRange(selection)) { live = (rowIndex, start) }
+        }
 
         // 1. 文字の装飾。セルの中身だけを見せ、縦棒と前後の空白は幅ゼロにする
         var textRanges: [[NSRange]] = []
-        for row in rows {
+        for (rowIndex, row) in rows.enumerated() {
             let active = isActive(row.line.full)
             storage.addAttribute(.font, value: row.isHeader ? TableRowDecoration.headerFont : TableRowDecoration.bodyFont, range: row.line.content)
             let cells = row.cells.map { trimmed($0, in: string) }
@@ -281,12 +294,20 @@ struct MarkdownStyler {
             var visible = IndexSet()
             for (column, cell) in cells.enumerated() where cell.length > 0 {
                 if column < columnCount { visible.insert(integersIn: cell.location..<NSMaxRange(cell)) }
-                styleInline(text, line: cell, in: storage, active: active)
+                // カーソルのあるセルがある行では、ほかのセルはフラグメントが描くので、記号を隠した形で装飾する
+                let isLive = live.map { $0 == (rowIndex, column) }
+                styleInline(text, line: cell, in: storage, active: isLive ?? active)
                 // <br> はセル内の改行として「↵」で示す
                 for match in lineBreakTag.matches(in: text, range: cell) {
                     let last = NSRange(location: NSMaxRange(match.range) - 1, length: 1)
                     storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear],
                                           range: NSRange(location: match.range.location, length: match.range.length - 1))
+                    if isLive == true {
+                        // 編集中のセルでは「>」を表示のうえで改行に置き換え、行末に「↵」を薄く出す
+                        storage.addAttributes([.foregroundColor: NSColor.clear, .maLineBreak: true,
+                                               .maReplacement: Replacement("↵", color: .tertiaryLabelColor)], range: last)
+                        continue
+                    }
                     // 「>」より幅のある「↵」が隣の文字に重ならないよう、字間で幅を足す
                     storage.addAttributes([.foregroundColor: NSColor.clear, .kern: 8,
                                            .maReplacement: Replacement("↵", color: .tertiaryLabelColor)], range: last)
@@ -349,13 +370,19 @@ struct MarkdownStyler {
                 carried = max(0, drawn[column] - left - width)
             }
             // カーソルのない行で、<br> や列幅に収まらない文字があるセルがあれば、フラグメントが改行・折り返して描く。
-            // カーソルのある行は、元の文字を1行に並べたまま編集させる
+            // カーソルのあるセルがある行は、ほかのセルをフラグメントが描き、そのセルだけ元の文字を列の中で折り返す
             var cellTexts: [NSAttributedString]?
             var height = TableRowDecoration.rowHeight
             let wraps = (0..<min(columnCount, row.cells.count)).contains { column in
                 let content = textRanges[rowIndex][column]
                 return content.length > 0 && (lineBreakTag.firstMatch(in: text, range: content) != nil
                     || measured[rowIndex][column] > drawn[column] - padding * 2)
+            }
+            if let live, live.row == rowIndex {
+                styleLiveRow(row.line, isHeader: row.isHeader, cells: textRanges[rowIndex], column: live.column, wraps: wraps,
+                             widths: drawn, alignments: alignments, layout: layout, isLast: rowIndex == rows.count - 1,
+                             in: storage, text: text)
+                continue
             }
             if !isActive(row.line.full) && wraps {
                 let texts = (0..<columnCount).map { column -> NSAttributedString in
@@ -397,6 +424,67 @@ struct MarkdownStyler {
             .maBlock: TableRowDecoration(kind: .separator, layout: layout, isLast: false),
         ], range: block[1].full)
         return layout
+    }
+
+    /// カーソルのあるセルがある行。そのセルの文字だけを段落のインデントで列の中に置き、列の幅で折り返す
+    /// （<br> は表示のうえで改行に置き換える）。ほかのセルは装飾済みの文字をフラグメントが描き、元の文字は幅ゼロで隠す。
+    /// 1つの段落の文字は1列にしか流せないので、複数のセルを同時に元の文字のまま複数行にはできない
+    private func styleLiveRow(
+        _ line: Line, isHeader: Bool, cells: [NSRange], column live: Int, wraps: Bool, widths: [CGFloat],
+        alignments: [NSTextAlignment], layout: TableLayout, isLast: Bool, in storage: NSTextStorage, text: String
+    ) {
+        let padding = TableRowDecoration.cellPadding
+        let vertical = TableRowDecoration.verticalPadding
+        let alignment = { (column: Int) in column < alignments.count ? alignments[column] : .left }
+        var texts = (0..<widths.count).map { column -> NSAttributedString in
+            guard column < cells.count, cells[column].length > 0 else { return NSAttributedString() }
+            return cellText(cells[column], alignment: alignment(column), in: storage, text: text)
+        }
+        let heights = texts.enumerated().map { column, cell in
+            cell.boundingRect(with: CGSize(width: max(1, widths[column] - padding * 2), height: .greatestFiniteMagnitude),
+                              options: [.usesLineFragmentOrigin, .usesFontLeading]).height
+        }
+        let height = wraps ? max(TableRowDecoration.rowHeight, ceil(heights.max() ?? 0) + vertical * 2 + 4) : TableRowDecoration.rowHeight
+        // 編集中のセルはフラグメントでは描かない
+        texts[live] = NSAttributedString()
+
+        let content = cells[live]
+        for index in line.content.location..<NSMaxRange(line.content) where !NSLocationInRange(index, content) {
+            storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear], range: NSRange(location: index, length: 1))
+        }
+        // 隠した文字に残った記号の差し替えと字間（<br> の「>」の字間など）も外す
+        for hidden in [NSRange(location: line.content.location, length: max(0, content.location - line.content.location)),
+                       NSRange(location: NSMaxRange(content), length: NSMaxRange(line.content) - NSMaxRange(content))] {
+            storage.removeAttribute(.maReplacement, range: hidden)
+            storage.removeAttribute(.kern, range: hidden)
+        }
+
+        // 行の高さと行間は、フラグメントが描く折り返した文字（lineSpacing 2）に揃える
+        let font = isHeader ? TableRowDecoration.headerFont : TableRowDecoration.bodyFont
+        let lineHeight = font.ascender - font.descender + font.leading
+        let lines = max(1, Int(((heights[live] + 2) / (lineHeight + 2)).rounded()))
+        let left = widths.prefix(live).reduce(0, +)
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        style.alignment = alignment(live)
+        style.minimumLineHeight = lineHeight
+        style.maximumLineHeight = lineHeight
+        style.lineSpacing = 2
+        style.firstLineHeadIndent = left + padding
+        style.headIndent = left + padding
+        // 隠した文字にもわずかな幅があるので、1pt の余裕を持たせる（足りないと行末の隠した文字だけが次の行に回る）
+        style.tailIndent = left + widths[live] - padding + 1
+        // TextKit 2 は行間を行の上に入れるので、そのままではフラグメントが描く文字より下に出る。上の余白を 1pt 減らす
+        style.paragraphSpacingBefore = vertical - 1
+        // 行高を固定したほかの行は、実際には指定より 3pt 低く並ぶ（ベースラインを上げた分が詰まる）。
+        // カーソルが入っても行の高さが変わらないよう、同じだけ低くする
+        style.paragraphSpacing = max(0, height - 3 - style.paragraphSpacingBefore - CGFloat(lines) * (lineHeight + 2))
+        storage.addAttributes([
+            .paragraphStyle: style,
+            .baselineOffset: 0,
+            .maBlock: TableRowDecoration(kind: isHeader ? .header : .body, layout: layout, isLast: isLast, cellTexts: texts,
+                                         liveColumn: live),
+        ], range: line.full)
     }
 
     /// 並べたときの文字の幅。「。」などの全角の約物は、行末では詰めて測られるが、表では後ろに隠した文字が続くので詰まらない。

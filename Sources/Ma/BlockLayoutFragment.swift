@@ -13,6 +13,8 @@ extension NSAttributedString.Key {
     static let maURL = NSAttributedString.Key("ma.url")
     /// AI へのコメントを付けた文字に付ける。値はコメント本文。カーソル行（記号が見えている状態）では付けない
     static let maAIComment = NSAttributedString.Key("ma.aiComment")
+    /// 表の編集中のセルで、<br> の「>」に付ける。表示のうえだけ行区切り（U+2028）に置き換えてセルの中で改行する
+    static let maLineBreak = NSAttributedString.Key("ma.lineBreak")
 }
 
 /// チェックボックスの状態。rawValue は `[ ]` の中の文字
@@ -262,17 +264,21 @@ final class TableRowDecoration: NSObject, @unchecked Sendable {
     let isLast: Bool
     /// セル内の改行や折り返しがある行で、フラグメントが描くセルの文字。nil なら元の文字をそのまま見せている
     let cellTexts: [NSAttributedString]?
+    /// カーソルのあるセルの列。この列だけは元の文字を列の中に並べて見せている（`cellTexts` の中身は空）
+    let liveColumn: Int?
 
-    init(kind: Kind, layout: TableLayout, isLast: Bool, cellTexts: [NSAttributedString]? = nil) {
+    init(kind: Kind, layout: TableLayout, isLast: Bool, cellTexts: [NSAttributedString]? = nil, liveColumn: Int? = nil) {
         self.kind = kind
         self.layout = layout
         self.cellTexts = cellTexts
         self.isLast = isLast
+        self.liveColumn = liveColumn
     }
 
     override func isEqual(_ object: Any?) -> Bool {
         guard let other = object as? TableRowDecoration else { return false }
         return kind == other.kind && isLast == other.isLast && layout == other.layout && cellTexts == other.cellTexts
+            && liveColumn == other.liveColumn
     }
 
     override var hash: Int { layout.hash }
@@ -604,5 +610,23 @@ final class BlockLayoutDelegate: NSObject, NSTextLayoutManagerDelegate {
             fragment.decoration = paragraph.attributedString.attribute(.maBlock, at: 0, effectiveRange: nil) as? NSObject
         }
         return fragment
+    }
+}
+
+/// 表の編集中のセルの <br> を、表示のうえだけ行区切りにする。文字数は変えないので、文書の位置との対応はそのまま
+final class TableLineBreakDelegate: NSObject, NSTextContentStorageDelegate {
+    func textContentStorage(_ textContentStorage: NSTextContentStorage, textParagraphWith range: NSRange) -> NSTextParagraph? {
+        guard let storage = textContentStorage.textStorage, NSMaxRange(range) <= storage.length else { return nil }
+        var breaks: [NSRange] = []
+        storage.enumerateAttribute(.maLineBreak, in: range) { value, found, _ in
+            if value != nil { breaks.append(NSRange(location: found.location - range.location, length: found.length)) }
+        }
+        guard !breaks.isEmpty else { return nil }
+        let paragraph = NSMutableAttributedString(attributedString: storage.attributedSubstring(from: range))
+        // 置き換えた文字は元の文字の属性を引き継ぐ
+        for found in breaks {
+            paragraph.replaceCharacters(in: found, with: String(repeating: "\u{2028}", count: found.length))
+        }
+        return NSTextParagraph(attributedString: paragraph)
     }
 }
