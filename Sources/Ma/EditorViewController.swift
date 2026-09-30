@@ -333,6 +333,12 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     private var editingProperties = false
     /// 最後に保存へ回した本文。取り消し・やり直しで変わったかどうかの判定に使う
     private var reportedText = ""
+    /// `/` の入力補助の一覧
+    private let slashMenu = SlashMenu()
+    /// 一覧を出している `/` の位置
+    private var slashLocation: Int?
+    /// 直前の編集で打った `/` の位置。textDidChange で一覧を出すか決める
+    private var typedSlash: Int?
 
     /// ソース表示（装飾なし）かどうか。切り替えと記録は EditorAreaViewController が受け持つ
     var sourceMode = false {
@@ -358,6 +364,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.onTextWidthChange = { [weak self] in self?.restyle(force: true) }
         textView.onColumnDrag = { [weak self] in self?.restyle(force: true) }
         setUpProperties()
+        slashMenu.onChoose = { [weak self] command in self?.applySlashCommand(command) }
         // 取り消し・やり直しでは textDidChange が呼ばれないことがあるので、ここでも保存と装飾をやり直す。
         // 取り消し履歴はウインドウで共有しているので、ほかのタブの取り消しでも呼ばれる（本文が変わったときだけ扱う）
         for name in [NSNotification.Name.NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange] {
@@ -372,6 +379,12 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .textBackgroundColor
         scrollView.documentView = textView
+        // スクロールやウインドウの切り替えで一覧がカーソルから離れるので閉じる
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(closeSlashMenu),
+                                               name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
+        NotificationCenter.default.addObserver(self, selector: #selector(closeSlashMenu),
+                                               name: NSWindow.didResignKeyNotification, object: nil)
 
         // NSScrollView に直接載せたサブビューは制約どおりに置かれないので、入れ物のビューに並べる
         let container = NSView()
@@ -389,6 +402,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     }
 
     func show(_ document: OpenDocument?) {
+        closeSlashMenu()
         url = document?.url
         placeholder.isHidden = document != nil
         textView.isEditable = document != nil
@@ -460,6 +474,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         reportedText = textView.string
         if let url { onChange?(url, textView.string) }
         restyle(force: true)
+        updateSlashMenu()
     }
 
     @objc private func textDidChangeByUndo() {
@@ -469,6 +484,71 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     func textViewDidChangeSelection(_ notification: Notification) {
         restyle(force: false)
+        if let slashLocation, !textView.hasMarkedText() {
+            let selection = textView.selectedRange()
+            if selection.length > 0 || selection.location <= slashLocation { closeSlashMenu() }
+        }
+    }
+
+    // MARK: - スラッシュの入力補助
+
+    /// `/` を打った直後に一覧を出し、続けて打った文字で絞り込む。空白を打つか、当てはまる項目がなくなったら閉じる
+    private func updateSlashMenu() {
+        let string = textView.string as NSString
+        let selection = textView.selectedRange()
+        if let typed = typedSlash {
+            typedSlash = nil
+            // 行頭か空白の直後の `/` だけ。表の中と、隠したフロントマターの中では出さない
+            let afterSpace = typed == 0 || [0x20, 0x09, 0x0A, 0x0D, 0x3000].contains(string.character(at: typed - 1))
+            if afterSpace, typed < string.length, string.character(at: typed) == 0x2F, selection == NSRange(location: typed + 1, length: 0),
+               !tables.contains(where: { NSLocationInRange(typed, $0.tableRange) }),
+               frontmatter.map({ typed >= NSMaxRange($0.range) }) ?? true {
+                slashLocation = typed
+            }
+        }
+        guard let slash = slashLocation else { return }
+        guard selection.length == 0, selection.location > slash, slash < string.length, string.character(at: slash) == 0x2F else {
+            return closeSlashMenu()
+        }
+        let query = string.substring(with: NSRange(location: slash + 1, length: selection.location - slash - 1))
+        let commands = SlashCommand.matching(query)
+        guard query.rangeOfCharacter(from: .whitespacesAndNewlines) == nil, !commands.isEmpty, let window = view.window else {
+            return closeSlashMenu()
+        }
+        let anchor = textView.firstRect(forCharacterRange: NSRange(location: slash, length: 1), actualRange: nil)
+        slashMenu.show(commands, below: anchor, in: window)
+    }
+
+    @objc private func closeSlashMenu() {
+        slashLocation = nil
+        slashMenu.hide()
+    }
+
+    private func applySlashCommand(_ command: SlashCommand) {
+        guard let slash = slashLocation else { return }
+        let caret = textView.selectedRange().location
+        closeSlashMenu()
+        let edit = command.edit(in: textView.string as NSString, slash: slash, caret: caret)
+        textView.replace(edit.range, with: edit.replacement, actionName: command.title)
+        textView.setSelectedRange(edit.selection)
+    }
+
+    /// 一覧を出しているあいだの ↑↓・Enter・Tab・Esc
+    private func handleSlashMenuCommand(_ selector: Selector) -> Bool {
+        guard slashMenu.isVisible, !textView.hasMarkedText() else { return false }
+        switch selector {
+        case #selector(NSResponder.moveUp(_:)):
+            slashMenu.moveSelection(by: -1)
+        case #selector(NSResponder.moveDown(_:)):
+            slashMenu.moveSelection(by: 1)
+        case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+            if let command = slashMenu.selectedCommand { applySlashCommand(command) }
+        case #selector(NSResponder.cancelOperation(_:)), #selector(NSTextView.complete(_:)):
+            closeSlashMenu()
+        default:
+            return false
+        }
+        return true
     }
 
     /// カーソルのある行だけ記号を表示し、それ以外の行では隠す
@@ -601,6 +681,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     /// 隠したフロントマターを本文の編集で壊さないよう、一部だけにかかる書き換えは止める（全体を消すのは許す）
     func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+        if replacementString == "/", range.length == 0, !textView.hasMarkedText() { typedSlash = range.location }
         // 取り消し・やり直しも止めない（止めると文字は戻るのに textDidChange が呼ばれず、保存されない）
         let undoManager = textView.undoManager
         guard !editingProperties, undoManager?.isUndoing != true, undoManager?.isRedoing != true,
@@ -614,6 +695,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     /// Tab で次のセル、Shift+Tab で前のセル、Enter で下の行、Shift+Enter でセル内の改行（<br>）
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if handleSlashMenuCommand(selector) { return true }
         if !sourceMode, selector == #selector(NSResponder.insertTab(_:))
             || selector == #selector(NSResponder.insertBacktab(_:)),
            shiftListItems(outdent: selector == #selector(NSResponder.insertBacktab(_:))) {
