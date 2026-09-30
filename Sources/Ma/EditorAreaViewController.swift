@@ -18,6 +18,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     private var contents: [Tab.ID: NSViewController] = [:]
     private weak var shown: NSViewController?
     private let favoriteButton = NSButton()
+    private let pathLabel = PassthroughLabel(labelWithString: "")
 
     private static let sourceModeKey = "sourceMode"
     /// ソース表示（装飾なし）かどうか。⌘E で全タブまとめて切り替え、次回の起動にも引き継ぐ
@@ -56,7 +57,19 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
             favoriteButton.widthAnchor.constraint(equalToConstant: 26),
             favoriteButton.heightAnchor.constraint(equalToConstant: 26),
         ])
+        pathLabel.font = .systemFont(ofSize: 12)
+        pathLabel.lineBreakMode = .byTruncatingHead
+        pathLabel.translatesAutoresizingMaskIntoConstraints = false
+        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        container.addSubview(pathLabel)
+        NSLayoutConstraint.activate([
+            // ☆と縦の中心を揃え、左端も☆の右端と同じだけ内側に置く
+            pathLabel.centerYAnchor.constraint(equalTo: favoriteButton.centerYAnchor),
+            pathLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            pathLabel.trailingAnchor.constraint(lessThanOrEqualTo: favoriteButton.leadingAnchor, constant: -12),
+        ])
         setFavorite(nil)
+        setNotePath(nil)
         view = container
     }
 
@@ -69,6 +82,20 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
             .withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
         favoriteButton.contentTintColor = filled ? .systemYellow : .secondaryLabelColor
         favoriteButton.toolTip = label
+    }
+
+    /// 左上に vault からの相対パスを出す（Obsidian のパンくずに近い見た目）。フォルダ部分は薄くし、拡張子は省く。nil で隠す
+    func setNotePath(_ path: String?) {
+        pathLabel.isHidden = path == nil
+        guard let path else { return }
+        let name = (path as NSString).lastPathComponent
+        let folder = String(path.dropLast(name.count))
+        let font = pathLabel.font ?? .systemFont(ofSize: 12)
+        let text = NSMutableAttributedString(string: folder, attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor])
+        text.append(NSAttributedString(string: (name as NSString).deletingPathExtension,
+                                       attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        pathLabel.attributedStringValue = text
+        pathLabel.toolTip = path
     }
 
     @objc private func favoriteClicked(_ sender: NSButton) { onToggleFavorite?() }
@@ -183,4 +210,9 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         if menuItem.action == #selector(addProperty(_:)) { return shown is EditorViewController }
         return true
     }
+}
+
+/// 本文の上に重ねる表示だけのラベル。クリックは下の本文に通す
+private final class PassthroughLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

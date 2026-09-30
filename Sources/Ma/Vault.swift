@@ -204,7 +204,7 @@ final class Vault {
     }
 
     /// vault からの相対パス。Obsidian に合わせて合成形（NFC）にする
-    private func relativePath(of url: URL) -> String? {
+    func relativePath(of url: URL) -> String? {
         guard let root, url.path.hasPrefix(root.path + "/") else { return nil }
         return String(url.path.dropFirst(root.path.count + 1)).precomposedStringWithCanonicalMapping
     }
