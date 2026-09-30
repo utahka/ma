@@ -220,7 +220,10 @@ final class EditorTextView: NSTextView {
             }
             return
         }
-        guard let hit = columnEdge(at: point) else { return super.mouseDown(with: event) }
+        guard let hit = columnEdge(at: point) else {
+            enterTableCell(at: point)
+            return super.mouseDown(with: event)
+        }
         // 境界を掴んだときはカーソルを表に入れない（入れるとソース表示に切り替わる）。
         // ドラッグ中は表を作り直しながら描くので、位置が定まらない行の追加ボタンは隠す
         hideAddRowButton()
@@ -303,6 +306,36 @@ final class EditorTextView: NSTextView {
               let column = edges.firstIndex(where: { abs($0 - location.x) <= 4 })
         else { return nil }
         return (row.layout, column, scale)
+    }
+
+    /// カーソルのある表の行で、ほかのセルをクリックしたら、先にカーソルをそのセルへ移す。
+    /// ほかのセルの元の文字は幅ゼロで隠しているので、そのままではクリックした位置の文字を当てられない。
+    /// セルを移すと装飾がかけ直され、続く super の mouseDown はそのセルの文字の上で位置を決める
+    private func enterTableCell(at point: NSPoint) {
+        let location = containerPoint(point)
+        guard let fragment = fragment(at: location),
+              let row = fragment.decoration as? TableRowDecoration, let live = row.liveColumn,
+              let edges = fragment.columnEdges()?.edges,
+              let column = edges.firstIndex(where: { location.x < $0 }), column != live,
+              let content = textLayoutManager?.textContentManager
+        else { return }
+        let start = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+        let paragraph = NSRange(location: start, length: content.offset(from: fragment.rangeInElement.location,
+                                                                        to: fragment.rangeInElement.endLocation))
+        guard let cells = row.layout.rows.first(where: { $0.first.map { NSLocationInRange($0.location, paragraph) } == true }),
+              column < cells.count
+        else { return }
+        let string = self.string as NSString
+        let cell = cells[column]
+        var end = NSMaxRange(cell)
+        while end > cell.location, [0x20, 0x09].contains(string.character(at: end - 1)) { end -= 1 }
+        setSelectedRange(NSRange(location: end == cell.location ? cell.location + min(1, cell.length) : end, length: 0))
+        // 装飾をかけ直した行をレイアウトし直してから、super にクリックの位置を求めさせる
+        if let from = content.location(content.documentRange.location, offsetBy: paragraph.location),
+           let to = content.location(from, offsetBy: paragraph.length),
+           let range = NSTextRange(location: from, end: to) {
+            textLayoutManager?.ensureLayout(for: range)
+        }
     }
 
     /// マウス位置にチェックボックスがあれば、`[ ]` の文書内の範囲とチェック状態を返す
@@ -466,7 +499,10 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     private let placeholder = NSTextField(labelWithString: "ノートを選択してください")
     private let styler = MarkdownStyler()
     private let layoutDelegate = BlockLayoutDelegate()
+    private let lineBreakDelegate = TableLineBreakDelegate()
     private var activeLines = NSRange(location: NSNotFound, length: 0)
+    /// カーソルのある表のセル（縦棒の間の範囲）。同じ行でもセルが変わったら装飾をかけ直す
+    private var activeCell: NSRange?
     /// 直近の装飾で見つかった表。表の中での Tab や Enter の移動先を求めるのに使う
     private var tables: [TableLayout] = []
     /// 直近の装飾で読んだフロントマター。ソース表示のときは nil
@@ -500,6 +536,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     override func loadView() {
         textView.delegate = self
         textView.textLayoutManager?.delegate = layoutDelegate
+        textView.textContentStorage?.delegate = lineBreakDelegate
         textView.isRichText = false
         textView.allowsUndo = true
         textView.usesFindBar = true
@@ -747,8 +784,12 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         let lines = (storage.string as NSString).lineRange(
             for: NSRange(location: location, length: min(selection.length, length - location))
         )
-        guard force || lines != activeLines else { return }
+        let cell = tables.lazy.compactMap { table in
+            table.cell(containing: location).map { table.rows[$0.row][$0.column] }
+        }.first
+        guard force || lines != activeLines || cell != activeCell else { return }
         activeLines = lines
+        activeCell = cell
         frontmatter = sourceMode ? nil : Frontmatter.parse(storage.string)
         let properties = textView.propertiesView
         if let frontmatter {
@@ -763,6 +804,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         // スクロール位置に見える中身がずれたり白くなったりするので、写しに装飾してから変わった段落だけ書き戻す
         let styled = NSTextStorage(attributedString: storage)
         tables = styler.apply(to: styled, activeRange: lines, availableWidth: textView.textWidth, sourceMode: sourceMode,
+                              selection: selection,
                               draggedWidths: textView.draggedWidths,
                               frontmatter: frontmatter.flatMap { fm in height.map { (fm.range, $0) } },
                               calloutIcons: showsCalloutIcons, expandedCallouts: expandedCallouts)
@@ -938,7 +980,18 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         case #selector(NSResponder.insertNewline(_:)) where NSApp.currentEvent?.modifierFlags.contains(.shift) == true,
              #selector(NSResponder.insertLineBreak(_:)):
             self.textView.replace(NSRange(location: caret, length: 0), with: "<br>", actionName: "セル内の改行")
-            textView.setSelectedRange(NSRange(location: caret + 4, length: 0))
+            // 表示のうえでは改行の直後なので、カーソルは次の行の先頭に出す
+            textView.setSelectedRange(NSRange(location: caret + 4, length: 0), affinity: .downstream, stillSelecting: false)
+        case #selector(NSResponder.deleteBackward(_:)):
+            // <br> の直後で消したらタグごと消す。1文字ずつ消すと、途中まで消えたタグが文字のまま見える
+            let cell = table.rows[row][column]
+            let start = max(cell.location, caret - 6)
+            let string = textView.string as NSString
+            let tag = string.range(of: #"<br\s*/?>$"#, options: [.regularExpression, .caseInsensitive],
+                                   range: NSRange(location: start, length: caret - start))
+            guard tag.location != NSNotFound else { return false }
+            self.textView.replace(tag, with: "", actionName: "セル内の改行の削除")
+            textView.setSelectedRange(NSRange(location: tag.location, length: 0))
         case #selector(NSResponder.insertNewline(_:)):
             if row + 1 < table.rows.count {
                 moveCaret(to: table, row: row + 1, column: column)
@@ -1025,6 +1078,12 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         if let frontmatter, new.length == 0, new.location < NSMaxRange(frontmatter.range) {
             return NSRange(location: NSMaxRange(frontmatter.range), length: 0)
         }
+        // 表のセルの <br> の途中は見えない位置なので、キー操作なら進む向きの端、クリックなら手前の端へ寄せる
+        if !sourceMode, new.length == 0, tables.contains(where: { NSLocationInRange(new.location, $0.tableRange) }),
+           let tag = lineBreakTag(around: new.location) {
+            let forward = NSApp.currentEvent?.type == .keyDown && new.location > old.location
+            return NSRange(location: forward ? NSMaxRange(tag) : tag.location, length: 0)
+        }
         guard !sourceMode, new.length == 0,
               let table = tables.first(where: {
                   $0.separatorRange.location <= new.location && new.location <= NSMaxRange($0.separatorRange)
@@ -1035,6 +1094,16 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
             return NSRange(location: caretLocation(in: table, row: 1, column: column), length: 0)
         }
         return NSRange(location: caretLocation(in: table, row: 0, column: column), length: 0)
+    }
+
+    /// `location` が <br> の途中（両端を除く）にあれば、そのタグの範囲
+    private func lineBreakTag(around location: Int) -> NSRange? {
+        let string = textView.string as NSString
+        let start = max(0, location - 5)
+        let range = NSRange(location: start, length: min(string.length, location + 5) - start)
+        let tag = try? NSRegularExpression(pattern: #"<br\s*/?>"#, options: [.caseInsensitive])
+        return tag?.matches(in: string as String, range: range).map(\.range)
+            .first { $0.location < location && location < NSMaxRange($0) }
     }
 
     private func moveCaret(to table: TableLayout, row: Int, column: Int) {
