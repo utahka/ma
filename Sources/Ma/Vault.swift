@@ -29,6 +29,9 @@ struct OpenDocument {
     let text: String
     /// 戻る・進むで開いたときに復元する表示位置
     var viewState: NoteViewState? = nil
+    /// 開いているノートを外部の変更で読み直したとき。エディタは違う部分だけを差し替え、表示位置とフォーカスを動かさない
+    /// （サイドバーの検索欄などで入力中のことがある）
+    var isReload = false
 }
 
 /// ノートのカーソルとスクロールの位置
@@ -70,6 +73,10 @@ private final class VaultFolder {
     var diskTexts: [URL: String] = [:]
     var saveTask: Task<Void, Never>?
     var baseCache: [String: (modified: Date, base: BaseFile?)] = [:]
+    /// vault のファイルの変更を見張る。外部で変わったノートやファイル一覧をすぐに反映する
+    var watcher: FolderWatcher?
+    /// 変換中のノートがあって読み直しを見送ったとき、あとで読み直す
+    var retryTask: Task<Void, Never>?
 
     private struct WeakVault { weak var vault: Vault? }
     private var members: [WeakVault] = []
@@ -107,6 +114,8 @@ final class Vault {
     var viewState: ((Tab.ID) -> NoteViewState?)?
     /// 外部変更と未保存の編集がぶつかったときに、自分の編集で上書きするなら true
     var resolveSaveConflict: ((URL) -> Bool)?
+    /// タブで日本語の変換中（未確定の文字がある）なら true。変換中は外部の変更で読み直さない
+    var isComposing: ((Tab.ID) -> Bool)?
     /// ノートやプロパティ型が外部で変わったとき
     var onExternalChange: (() -> Void)?
     /// ほかのウィンドウで開いているノートを開こうとして、このウィンドウのタブに切り替えたとき（ウィンドウを前面に出す）
@@ -202,6 +211,12 @@ final class Vault {
         pendingTexts = [:]
         bookmarks = []
         bookmarksLoaded = false
+        folder.watcher?.stop()
+        folder.watcher = FolderWatcher(root: url) { [weak folder] change in
+            // 分離したウィンドウが閉じても残るよう、メインウィンドウの Vault に任せる
+            folder?.vaults.first?.applyFileChanges(change)
+        }
+        if folder.watcher == nil { NSLog("フォルダの監視を始められない: \(url.path)") }
         broadcast(\.onTreeChange)
         tabsDidChange()
         broadcast(\.onNotesChange)
@@ -566,7 +581,8 @@ final class Vault {
         pendingTexts = [:]
     }
 
-    /// アプリが前面に戻ったとき、外部で変わったノート・プロパティ型・ファイル一覧・お気に入りを読み直す
+    /// アプリが前面に戻ったとき、外部で変わったノート・プロパティ型・ファイル一覧・お気に入りを読み直す。
+    /// ふだんは `FolderWatcher` で反映するので、監視を始められなかったときや通知を取りこぼしたときの保険
     func refreshExternalChanges() {
         reloadChangedNotes()
         rescan()
@@ -576,27 +592,106 @@ final class Vault {
     /// 開いているノート（すべてのウィンドウ）とプロパティ型のうち、外部で変わったものを読み直す。
     /// タブの切り替えのたびに呼ぶので vault 全体は走査しない
     private func reloadChangedNotes() {
+        folder.retryTask?.cancel()
         var changed = propertyTypes?.reload() == true
-        for vault in folder.vaults where vault.reloadChangedTabs() { changed = true }
+        var deferred = false
+        for vault in folder.vaults {
+            let result = vault.reloadChangedTabs()
+            if result.changed { changed = true }
+            if result.deferred { deferred = true }
+        }
         if changed { broadcast(\.onExternalChange) }
+        if deferred {
+            folder.retryTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                self?.reloadChangedNotes()
+            }
+        }
     }
 
-    /// このウィンドウのタブで開いているノートのうち、外部で変わったものを読み直す。読み直したら true
-    private func reloadChangedTabs() -> Bool {
+    /// このウィンドウのタブで開いているノートのうち、外部で変わったものを読み直す。
+    /// 未保存の編集があるノートは読み直さず、保存するときに `resolveSaveConflict` で選んでもらう。
+    /// 変換中のノートは見送り、`deferred` を返す
+    private func reloadChangedTabs() -> (changed: Bool, deferred: Bool) {
         var changed = false
+        var deferred = false
         for tab in tabs where loadedTabs.contains(tab.id) {
             guard let url = tab.url, pendingTexts[url] == nil,
                   let text = try? String(contentsOf: url, encoding: .utf8), text != diskTexts[url]
             else { continue }
+            if isComposing?(tab.id) == true {
+                deferred = true
+                continue
+            }
             diskTexts[url] = text
             changed = true
             if tab.id == activeTab.id {
-                onLoad?(tab.id, OpenDocument(url: url, text: text, viewState: viewState?(tab.id)))
+                onLoad?(tab.id, OpenDocument(url: url, text: text, viewState: viewState?(tab.id), isReload: true))
             } else {
+                // 選んだときに読み直す。カーソルとスクロールの位置はそのときに戻す
+                if let state = viewState?(tab.id) { restoringViewStates[tab.id] = state }
                 loadedTabs.remove(tab.id)
             }
         }
-        return changed
+        return (changed, deferred)
+    }
+
+    /// `FolderWatcher` が知らせた変更を反映する。開いているノートは読み直し（Ma 自身の保存は `diskTexts` と同じなので読み直さない）、
+    /// ノートの追加・削除・名前の変更ならファイル一覧を作り直し、`.obsidian` の types.json・bookmarks.json も読み直す
+    fileprivate func applyFileChanges(_ change: FolderWatcher.Change) {
+        guard let root else { return }
+        if change.needsFullScan {
+            refreshExternalChanges()
+            broadcast(\.onNotesChange)
+            return
+        }
+        // FSEvents はシンボリックリンクを解決したパスで返す
+        let prefixes = Set([root.path, root.resolvingSymlinksInPath().path]).map { $0 + "/" }
+        func relative(_ path: String) -> String? {
+            prefixes.first { path.hasPrefix($0) }.map { String(path.dropFirst($0.count)).precomposedStringWithCanonicalMapping }
+        }
+        var treePaths: Set<String> = []
+        func collect(_ nodes: [FileNode]) {
+            for node in nodes {
+                if let path = relative(node.url.path) { treePaths.insert(path) }
+                collect(node.children)
+            }
+        }
+        collect(tree)
+        let openPaths = Set(folder.vaults.flatMap(\.tabs).compactMap { $0.url.flatMap { relative($0.path) } })
+
+        var needsRescan = false
+        var otherNoteChanged = false
+        var settingsChanged = false
+        for path in change.paths {
+            guard let name = relative(path) else { continue }
+            let components = name.split(separator: "/")
+            if components.contains(where: { $0.hasPrefix(".") }) {
+                if name == ".obsidian/types.json" || name == ".obsidian/bookmarks.json" { settingsChanged = true }
+                continue
+            }
+            let isNote = ["md", "base"].contains((name as NSString).pathExtension.lowercased())
+            if change.movedPaths.contains(path) {
+                // 保存でも一時ファイルからの名前の変更が届くので、一覧との食い違いがあるときだけ作り直す
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                if isNote || isDirectory.boolValue || treePaths.contains(name) {
+                    if exists != treePaths.contains(name) { needsRescan = true }
+                }
+            }
+            if isNote && !openPaths.contains(name) { otherNoteChanged = true }
+        }
+
+        reloadChangedNotes()
+        if settingsChanged { reloadBookmarks() }
+        if needsRescan {
+            rescan()
+            broadcast(\.onNotesChange)
+        } else if otherNoteChanged {
+            // 開いていないノートが変わったら `.base` の表を作り直す
+            broadcast(\.onExternalChange)
+        }
     }
 
     /// タブで開いていないノートのプロパティを、ファイルを直接書き換えて設定する

@@ -132,6 +132,10 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         (contents[tab] as? EditorViewController)?.viewState
     }
 
+    func isComposing(in tab: Tab.ID) -> Bool {
+        (contents[tab] as? EditorViewController)?.isComposing == true
+    }
+
     /// タブの並びと選択に合わせて、タブバーと表示する中身を揃える。閉じたタブの中身は捨てる
     func update(tabs: [Tab], activeIndex: Int, canGoBack: Bool, canGoForward: Bool) {
         tabBar.titles = tabs.map(\.title)
