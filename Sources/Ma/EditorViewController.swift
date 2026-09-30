@@ -918,7 +918,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         let caret = textView.selectedRange().location
         guard let table = tables.first(where: { NSLocationInRange(caret, $0.tableRange) || caret == $0.endOfLastRow }),
               let (row, column) = table.cell(containing: caret)
-        else { return breakCalloutLine(selector, at: caret) || continueList(selector, at: caret) }
+        else { return breakCalloutLine(selector, at: caret) || breakListLine(selector, at: caret) || continueList(selector, at: caret) }
         let columns = table.columnWidths.count
         switch selector {
         case #selector(NSResponder.insertTab(_:)):
@@ -963,7 +963,19 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         return true
     }
 
-    /// リスト項目で Enter を押したら次の項目を作る（空の項目ならリストを抜ける）。Shift+Enter は通常の改行
+    /// リスト項目や続きの行で Shift+Enter を押したら、新しい項目を作らずに項目の中で改行する（続きの行を本文の開始位置まで字下げする）
+    private func breakListLine(_ selector: Selector, at caret: Int) -> Bool {
+        let shiftReturn = selector == #selector(NSResponder.insertNewline(_:)) && NSApp.currentEvent?.modifierFlags.contains(.shift) == true
+        guard shiftReturn || selector == #selector(NSResponder.insertLineBreak(_:)),
+              let edit = ListLineBreak.edit(in: textView.string as NSString, caret: caret)
+        else { return false }
+        textView.replace(edit.range, with: edit.replacement, actionName: "改行")
+        textView.setSelectedRange(NSRange(location: edit.caret, length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
+        return true
+    }
+
+    /// リスト項目や続きの行で Enter を押したら次の項目を作る（空の項目ならリストを抜ける）。Shift+Enter は breakListLine
     private func continueList(_ selector: Selector, at caret: Int) -> Bool {
         guard selector == #selector(NSResponder.insertNewline(_:)),
               NSApp.currentEvent?.modifierFlags.contains(.shift) != true,
