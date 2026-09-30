@@ -589,7 +589,7 @@ struct MarkdownStyler {
             let name = string.substring(with: match.range(at: 1))
             let target = name.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
             storage.addAttributes([
-                .foregroundColor: NSColor.linkColor,
+                .foregroundColor: NSColor.maLink,
                 .maWikiLink: target.trimmingCharacters(in: .whitespaces),
             ], range: match.range)
             wrapMarkers(match.range, length: 2, in: storage, active: active)
@@ -602,7 +602,7 @@ struct MarkdownStyler {
         }
         for match in matches(link) {
             let label = match.range(at: 1)
-            storage.addAttribute(.foregroundColor, value: NSColor.linkColor, range: label)
+            storage.addAttribute(.foregroundColor, value: NSColor.maLink, range: label)
             storage.addAttribute(.maURL, value: string.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespaces), range: match.range)
             marker(NSRange(location: match.range.location, length: 1), in: storage, active: active)
             marker(NSRange(location: NSMaxRange(label), length: NSMaxRange(match.range) - NSMaxRange(label)), in: storage, active: active)

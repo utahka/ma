@@ -369,7 +369,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
                 let link = LinkLabel(labelWithString: note.basename)
                 link.font = Self.font
                 link.lineBreakMode = .byTruncatingTail
-                link.textColor = .linkColor
+                link.textColor = .maLink
                 content = link
             } else if let includesTime = dateColumns[property], let key = Self.noteKey(property) {
                 let cell = DateCell()
