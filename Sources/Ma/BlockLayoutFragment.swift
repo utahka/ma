@@ -259,6 +259,11 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
         return layoutFragmentFrame.height
     }
 
+    /// Link Embed のカードの枠（横はテキストコンテナ、縦はフラグメントの上端からの座標）
+    func embedCardRect() -> CGRect {
+        EmbedCard.cardRect(left: padding, width: min(availableWidth, 640))
+    }
+
     /// 表の各列の右端の x 座標（テキストコンテナの座標系）と、描画時の縮小率
     func columnEdges() -> (edges: [CGFloat], scale: CGFloat)? {
         guard let row = decoration as? TableRowDecoration else { return nil }
@@ -285,6 +290,10 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
             super.draw(at: point, in: context)
             drawBoxHeader(box, at: point)
             drawCheckboxes(at: point)
+        case let card as EmbedCard:
+            // 元の文字は透明なので、カードだけを描く
+            let rect = embedCardRect().offsetBy(dx: point.x - layoutFragmentFrame.minX, dy: point.y)
+            MainActor.assumeIsolated { card.draw(in: rect) }
         case let row as TableRowDecoration:
             // 罫線と背景を先に描き、セルの文字（元の Markdown の文字）はその上に通常どおり描く
             drawTableRow(row, at: point)
