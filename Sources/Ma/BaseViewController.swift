@@ -392,6 +392,11 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         add("列を隠す", symbol: "eye.slash", enabled: tableView.tableColumns.count > 1) { [weak self] in
             self?.hideColumn(property)
         }
+        menu.addItem(.separator())
+        // ファイルの属性（file.*）などノートのプロパティでない列は消せない
+        add("プロパティを削除…", symbol: "trash", enabled: Self.noteKey(property) != nil) { [weak self] in
+            self?.deleteProperty(property)
+        }
         return menu
     }
 
@@ -539,6 +544,57 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         } catch {
             showMessage("フィルタを保存できません: \(error)")
         }
+    }
+
+    // MARK: - プロパティの削除
+
+    /// `.base` からプロパティの定義と参照を消す。ノートの値は残す。フィルタで使っていれば消さずに知らせる
+    private func deleteProperty(_ property: String) {
+        guard Self.noteKey(property) != nil, let base, let window = view.window else { return }
+        let name = base.displayName(of: property)
+        let alert = NSAlert()
+        alert.messageText = "プロパティ「\(name)」を削除しますか？"
+        var info = "この .base からプロパティの定義（表示名・型）と、すべてのビューの列・並べ替え・グループ化での指定を消します。ノートの値は残ります。"
+        let uses = base.filterUses(of: property)
+        if !uses.isEmpty {
+            info += "\n\nこのプロパティはフィルタ（\(uses.joined(separator: "、"))）で使われています。フィルタの条件は書き換えずに残します。"
+        }
+        alert.informativeText = info
+        alert.addButton(withTitle: "削除")
+        alert.addButton(withTitle: "キャンセル")
+        alert.buttons[0].hasDestructiveAction = true
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.removeProperty(property)
+        }
+    }
+
+    private func removeProperty(_ property: String) {
+        guard let url else { return }
+        // 列の幅の保存を待っていたら先に書く（あとから消した列を含む並びで書き戻さないように）
+        if saveColumnsTask != nil {
+            saveColumnsTask?.cancel()
+            saveColumnsTask = nil
+            saveColumns()
+        }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let updated = BaseFile.removingProperty(text, property: property) else {
+                return showError("プロパティを削除できません", ".base の書き方が想定と違うため、ファイルを変更しませんでした。")
+            }
+            if updated != text { try updated.write(to: url, atomically: true, encoding: .utf8) }
+            base = try BaseFile(yaml: updated)
+            rebuild()
+        } catch {
+            showError("プロパティを削除できません", "\(error)")
+        }
+    }
+
+    private func showError(_ message: String, _ info: String) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = info
+        if let window = view.window { alert.beginSheetModal(for: window) } else { alert.runModal() }
     }
 
     // MARK: - 表
