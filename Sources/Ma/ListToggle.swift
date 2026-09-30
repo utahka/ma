@@ -7,13 +7,13 @@ struct ListToggle: Equatable {
     let start: Int
     /// 行頭の空白の文字数。▸/▾ は記号の手前に置く
     let indentLength: Int
-    /// 折りたたむ行。2行目の先頭から最後の行の末尾（改行の手前）まで
+    /// 折りたたむ行。最初の子の項目の先頭から最後の行の末尾（改行の手前）まで
     let hidden: NSRange
     /// 覚えておくための名前。記号・チェックボックス・行頭の空白を除いた最初の行の文字で、
     /// 階層の変更・番号の振り直し・チェックの切り替えでは変わらない
     let key: String
 
-    /// 項目の最初の行の末尾（改行の手前）
+    /// 項目の見えている部分（最初の行と、子の手前にある続きの行）の末尾（改行の手前）
     var headerEnd: Int { hidden.location - 1 }
 
     private static let marker = try! NSRegularExpression(pattern: #"^[ \t]*(?:[-*+]|\d+[.)])(?:[ \t]+\[[ xX-]\])?(?=[ \t]|$)"#)
@@ -28,9 +28,11 @@ struct ListToggle: Equatable {
             offset += (line as NSString).length + 1
         }
         return mover.blocks.compactMap { block in
-            guard block.kind == .listItem, block.lines.count > 1 else { return nil }
+            // 続きの行（Shift+Return で書いた項目の本文）は子ではなく項目の一部なので、子の項目があるときだけトグルにし、
+            // 最初の子の項目から先を隠す
+            guard block.kind == .listItem, let child = mover.childItems(of: block).first else { return nil }
             let first = block.lines.lowerBound, last = block.lines.upperBound
-            let hiddenStart = starts[first + 1]
+            let hiddenStart = starts[child.lines.lowerBound]
             let hiddenEnd = starts[last] + (mover.lines[last] as NSString).length
             let line = mover.lines[first] as NSString
             let prefix = marker.firstMatch(in: mover.lines[first], range: NSRange(location: 0, length: line.length))?.range.length ?? 0
