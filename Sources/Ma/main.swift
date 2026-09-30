@@ -1,11 +1,18 @@
 import AppKit
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSWindowDelegate {
+    /// メインウィンドウのタブ。フォルダの状態は分離したウィンドウの `Vault` と共有する
     private let vault = Vault()
     private let sidebar = SidebarViewController()
     private let editor = EditorAreaViewController()
     private var window: NSWindow!
+    /// タブをドラッグして分離したウィンドウ
+    private var detachedWindows: [DetachedWindow] = []
+    private var editorAreas: [EditorAreaViewController] { [editor] + detachedWindows.map(\.editor) }
+    /// メニューやキー操作の対象にするタブ。前面にある分離ウィンドウ、なければメインウィンドウ
+    private var activeDetached: DetachedWindow? { detachedWindows.first { $0.window.isMainWindow } }
+    private var activeVault: Vault { activeDetached?.vault ?? vault }
     private var sidebarCollapsedObservation: NSKeyValueObservation?
     private static let sidebarCollapsedKey = "sidebarCollapsed"
 
@@ -52,41 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // タイトルバーの帯と文字は出さず、信号機ボタンだけ本文の上に重ねる（タイトルは Mission Control やウィンドウメニューで使われる）
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        // AppDelegate が持ち続けるので、閉じたときに解放させない
+        window.isReleasedWhenClosed = false
+        window.delegate = self
 
+        connect(editor, to: vault, in: window)
         sidebar.onSelect = { [vault] url, newTab in vault.open(url, newTab: newTab) }
-        editor.onChange = { [vault] url, text in vault.textDidChange(text, url: url) }
-        editor.onOpenLink = { [unowned self] target, newTab in openLink(target, newTab: newTab) }
-        editor.propertyTypes = { [vault] in vault.propertyTypes }
-        editor.loadNotes = { [vault] in await vault.noteRecords() }
-        editor.propertySchemas = { [vault] url, text in vault.propertySchemas(for: url, text: text) }
-        editor.onOpenNote = { [vault] url, newTab in vault.open(url, newTab: newTab) }
-        editor.onSetProperty = { [vault, editor] url, key, value, type in
-            // 開いているノートはエディタで書き換え（取り消せる）、開いていなければファイルを書き換える
-            if !editor.setProperty(in: url, key, to: value, type: type) {
-                vault.setProperty(in: url, key, to: value, type: type)
-            }
-            vault.saveNow()
-        }
-        editor.onRenameProperty = { [vault, editor] urls, key, newKey in
-            // 保存を待っている編集を先に書き、ファイルを直接書き換えた分を古い本文で上書きしないようにする
-            vault.saveNow()
-            for url in urls where editor.renameProperty(in: url, from: key, to: newKey) == nil {
-                vault.renameProperty(in: url, from: key, to: newKey)
-            }
-            // 型が決めてあれば、新しい名前にも同じ型を付ける（ほかのノートが古い名前を使っているかもしれないので、古い方は残す）
-            if let types = vault.propertyTypes, let type = types.recorded[key], types.recorded[newKey] == nil {
-                types.set(type, for: newKey)
-            }
-            vault.saveNow()
-        }
-        editor.tabBar.onSelect = { [vault] index in vault.selectTab(at: index) }
-        editor.tabBar.onClose = { [vault] index in vault.closeTab(at: index) }
-        editor.tabBar.onMove = { [vault] source, destination in vault.moveTab(from: source, to: destination) }
-        editor.tabBar.onNewTab = { [vault] in vault.newTab() }
-        editor.tabBar.onBack = { [vault] in vault.goBack() }
-        editor.tabBar.onForward = { [vault] in vault.goForward() }
         editor.tabBar.onToggleSidebar = { [split] in split.toggleSidebar(nil) }
-        vault.viewState = { [unowned self] tab in editor.viewState(of: tab) }
         vault.onTreeChange = { [unowned self] in
             sidebar.reload(vault.tree)
             sidebar.select(vault.activeTab.url)
@@ -99,16 +78,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         sidebar.onDelete = { [unowned self] url in delete(url) }
         vault.onBookmarksChange = { [unowned self] in
             sidebar.reload(bookmarks: vault.bookmarks)
-            updateNoteHeader()
+            updateNoteHeader(of: editor, vault: vault)
         }
-        editor.onToggleFavorite = { [unowned self] in toggleBookmark(nil) }
         sidebar.calendarView.onSelectDate = { [vault] date in vault.openDailyNote(for: date) }
         vault.onNotesChange = { [unowned self] in
             let calendar = sidebar.calendarView
             calendar.firstWeekday = vault.dailyNotes?.settings.firstWeekday ?? Calendar.current.firstWeekday
             calendar.hasNote = vault.dailyNotes.map { notes in { notes.exists(for: $0) } }
         }
-        vault.onLoad = { [unowned self] tab, document in editor.show(document, in: tab) }
+    }
+
+    /// メインウィンドウと分離したウィンドウに共通の、エディタ・タブバーと `Vault` の結び付け。
+    /// 分離したウィンドウは閉じると捨てるので、クロージャは弱参照で持つ
+    private func connect(_ editor: EditorAreaViewController, to vault: Vault, in window: NSWindow) {
+        let isMain = vault === self.vault
+        editor.onChange = { [weak vault] url, text in vault?.textDidChange(text, url: url) }
+        editor.onOpenLink = { [unowned self, weak vault] target, newTab in
+            if let vault { openLink(target, newTab: newTab, in: vault) }
+        }
+        editor.propertyTypes = { [weak vault] in vault?.propertyTypes }
+        editor.loadNotes = { [weak vault] in await vault?.noteRecords() ?? [] }
+        editor.propertySchemas = { [weak vault] url, text in vault?.propertySchemas(for: url, text: text) ?? [:] }
+        editor.onOpenNote = { [weak vault] url, newTab in vault?.open(url, newTab: newTab) }
+        editor.onSetProperty = { [unowned self, weak vault] url, key, value, type in
+            guard let vault else { return }
+            // 開いているノートはエディタで書き換え（取り消せる）、開いていなければファイルを書き換える。ほかのウィンドウで開いていることもある
+            if !editorAreas.contains(where: { $0.setProperty(in: url, key, to: value, type: type) }) {
+                vault.setProperty(in: url, key, to: value, type: type)
+            }
+            vault.saveNow()
+        }
+        editor.onRenameProperty = { [unowned self, weak vault] urls, key, newKey in
+            guard let vault else { return }
+            // 保存を待っている編集を先に書き、ファイルを直接書き換えた分を古い本文で上書きしないようにする
+            vault.saveNow()
+            for url in urls where !editorAreas.contains(where: { $0.renameProperty(in: url, from: key, to: newKey) != nil }) {
+                vault.renameProperty(in: url, from: key, to: newKey)
+            }
+            // 型が決めてあれば、新しい名前にも同じ型を付ける（ほかのノートが古い名前を使っているかもしれないので、古い方は残す）
+            if let types = vault.propertyTypes, let type = types.recorded[key], types.recorded[newKey] == nil {
+                types.set(type, for: newKey)
+            }
+            vault.saveNow()
+        }
+        editor.onToggleFavorite = { [weak vault] in
+            if let url = vault?.activeTab.url { vault?.toggleBookmark(url) }
+        }
+        editor.tabBar.onSelect = { [weak vault] index in vault?.selectTab(at: index) }
+        editor.tabBar.onClose = { [weak vault, weak window] index in
+            guard let vault else { return }
+            // 分離したウィンドウは、最後のタブを閉じたらウィンドウごと閉じる
+            if !isMain, vault.tabs.count == 1 { window?.performClose(nil) } else { vault.closeTab(at: index) }
+        }
+        editor.tabBar.onMove = { [weak vault] source, destination in vault?.moveTab(from: source, to: destination) }
+        editor.tabBar.onDetach = { [unowned self, weak vault, weak editor] index, point in
+            guard let vault, let editor else { return }
+            detachTab(at: index, of: vault, size: editor.view.frame.size, to: point)
+        }
+        editor.tabBar.onNewTab = { [weak vault] in vault?.newTab() }
+        editor.tabBar.onBack = { [weak vault] in vault?.goBack() }
+        editor.tabBar.onForward = { [weak vault] in vault?.goForward() }
+        vault.viewState = { [weak editor] tab in editor?.viewState(of: tab) }
+        vault.onLoad = { [weak editor] tab, document in editor?.show(document, in: tab) }
         vault.resolveSaveConflict = { url in
             let alert = NSAlert()
             alert.messageText = "ファイルが外部で変更されています"
@@ -117,38 +148,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             alert.addButton(withTitle: "Ma の内容で上書き")
             return alert.runModal() == .alertSecondButtonReturn
         }
-        vault.onExternalChange = { [unowned self] in
+        vault.onExternalChange = { [unowned self, weak vault, weak editor] in
+            guard let vault, let editor else { return }
             editor.notesDidChange()
-            updateNoteHeader()
+            updateNoteHeader(of: editor, vault: vault)
         }
-        vault.onTabsChange = { [unowned self] in
+        vault.onRequestFocus = { [weak window] in window?.makeKeyAndOrderFront(nil) }
+        vault.onTabsChange = { [unowned self, weak vault, weak editor, weak window] in
+            guard let vault, let editor, let window else { return }
             editor.update(tabs: vault.tabs, activeIndex: vault.activeIndex,
                           canGoBack: vault.canGoBack, canGoForward: vault.canGoForward)
             let url = vault.activeTab.url
-            sidebar.select(url)
-            sidebar.calendarView.selectedDate = url.flatMap { vault.dailyNotes?.date(of: $0) }
+            if isMain {
+                sidebar.select(url)
+                sidebar.calendarView.selectedDate = url.flatMap { vault.dailyNotes?.date(of: $0) }
+            }
             window.title = url?.deletingPathExtension().lastPathComponent ?? "Ma"
             window.subtitle = vault.root?.lastPathComponent ?? ""
-            updateNoteHeader()
+            updateNoteHeader(of: editor, vault: vault)
         }
     }
 
-    private func updateNoteHeader() {
+    private func updateNoteHeader(of editor: EditorAreaViewController, vault: Vault) {
         editor.setFavorite(vault.activeTab.url.map { vault.isBookmarked($0) })
         // `.base` の表は左上にビューの切り替えがあるので、パスはノートのときだけ出す
         let url = vault.activeTab.url.flatMap { $0.pathExtension.lowercased() == "base" ? nil : $0 }
         editor.setNotePath(url.flatMap { vault.relativePath(of: $0) })
     }
 
+    // MARK: - 分離したウィンドウ
+
+    /// タブをウィンドウの外で離したら、そのタブを新しいウィンドウに移す。ウィンドウはタブがマウスの下に来る位置に置く
+    private func detachTab(at index: Int, of source: Vault, size: NSSize, to point: NSPoint) {
+        guard let (tab, viewState) = source.detachTab(at: index) else { return }
+        let size = NSSize(width: max(size.width, 480), height: max(size.height, 320))
+        let frame = NSRect(x: point.x - 160, y: point.y + TabBarView.height / 2 - size.height, width: size.width, height: size.height)
+        let vault = Vault(sharingFolderWith: source, tab: tab, viewState: viewState)
+        let detached = DetachedWindow(vault: vault, frame: frame)
+        let editor = detached.editor
+        connect(editor, to: vault, in: detached.window)
+        vault.onTreeChange = { [weak editor] in editor?.notesDidChange() }
+        vault.onBookmarksChange = { [unowned self, weak vault, weak editor] in
+            if let vault, let editor { updateNoteHeader(of: editor, vault: vault) }
+        }
+        vault.onFolderClose = { [weak detached] in detached?.window.close() }
+        detached.onClose = { [unowned self] closed in detachedWindows.removeAll { $0 === closed } }
+        detachedWindows.append(detached)
+        vault.reloadTabs()
+        detached.window.makeKeyAndOrderFront(nil)
+        keepTrafficLightsPlaced(in: detached.window)
+    }
+
+    /// メインウィンドウを閉じたら、分離したウィンドウもすべて閉じる（サイドバーのないウィンドウだけを残さない）
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        for detached in detachedWindows { detached.window.close() }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if vault.root == nil { vault.restoreLastRoot() }
         window.makeKeyAndOrderFront(nil)
-        keepTrafficLightsPlaced()
-        // マウスの戻る・進むボタン
-        NSEvent.addLocalMonitorForEvents(matching: .otherMouseUp) { [vault] event in
+        keepTrafficLightsPlaced(in: window)
+        // マウスの戻る・進むボタン。押したウィンドウのタブを動かす
+        NSEvent.addLocalMonitorForEvents(matching: .otherMouseUp) { [unowned self] event in
             let button = event.buttonNumber
             guard button == 3 || button == 4 else { return event }
-            MainActor.assumeIsolated { button == 3 ? vault.goBack() : vault.goForward() }
+            MainActor.assumeIsolated {
+                let vault = detachedWindows.first { $0.window === event.window }?.vault ?? vault
+                button == 3 ? vault.goBack() : vault.goForward()
+            }
             return nil
         }
         // Obsidian などで変えたノート・プロパティ型・ブックマークを反映する
@@ -178,7 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// 信号機ボタンを `TrafficLights` の位置に置く。AppKit はタイトルの変更やサイドバーの開閉のたびに
     /// タイトルバーを並べ直して元の位置に戻すので、ボタンの位置が変わったら置き直す
-    private func keepTrafficLightsPlaced() {
+    private func keepTrafficLightsPlaced(in window: NSWindow) {
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             guard let button = window.standardWindowButton(type) else { continue }
             button.postsFrameChangedNotifications = true
@@ -186,17 +254,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 self, selector: #selector(trafficLightFrameDidChange(_:)), name: NSView.frameDidChangeNotification, object: button
             )
         }
-        placeTrafficLights()
+        placeTrafficLights(in: window)
     }
 
     /// AppKit が3つのボタンを順に並べ直している途中で呼ばれるので、並べ終わってから置き直す
     /// （その場で動かすと、後から並べられる緑のボタンが元の位置に戻った）
     @objc private func trafficLightFrameDidChange(_ notification: Notification) {
-        DispatchQueue.main.async { [self] in placeTrafficLights() }
+        guard let window = (notification.object as? NSView)?.window else { return }
+        DispatchQueue.main.async { [self] in placeTrafficLights(in: window) }
     }
 
     /// フルスクリーンではメニューバーと一緒に出るので動かさない
-    private func placeTrafficLights() {
+    private func placeTrafficLights(in window: NSWindow) {
         guard !window.styleMask.contains(.fullScreen) else { return }
         for (index, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
             guard let button = window.standardWindowButton(type), let superview = button.superview else { continue }
@@ -207,7 +276,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             )
             if button.frame.origin != origin { button.setFrameOrigin(origin) }
         }
-        // サイドバーを閉じているとき、タブは緑のボタンの右から並ぶので描き直す
+        // サイドバーを閉じているとき（分離したウィンドウは常に）、タブは緑のボタンの右から並ぶので描き直す
+        let editor = detachedWindows.first { $0.window === window }?.editor ?? editor
         editor.tabBar.needsDisplay = true
     }
 
@@ -221,7 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// `[[ノート名]]` は vault のノートを開き、`[表示名](URL)` は既定のブラウザなど URL に対応するアプリで開く。
     /// スキームのない URL は、開いているノートからの相対パスのノートとして扱う
-    private func openLink(_ target: LinkTarget, newTab: Bool) {
+    private func openLink(_ target: LinkTarget, newTab: Bool, in vault: Vault) {
         switch target {
         case .note(let name):
             guard let url = vault.noteURL(forLink: name) else { return }
@@ -288,14 +358,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func toggleBookmark(_ sender: Any?) {
+        let vault = activeVault
         guard let url = vault.activeTab.url else { return }
         vault.toggleBookmark(url)
     }
 
-    @objc func goBack(_ sender: Any?) { vault.goBack() }
-    @objc func goForward(_ sender: Any?) { vault.goForward() }
+    @objc func goBack(_ sender: Any?) { activeVault.goBack() }
+    @objc func goForward(_ sender: Any?) { activeVault.goForward() }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let vault = activeVault
         if menuItem.action == #selector(goBack(_:)) { return vault.canGoBack }
         if menuItem.action == #selector(goForward(_:)) { return vault.canGoForward }
         guard menuItem.action == #selector(toggleBookmark(_:)) else { return true }
@@ -308,27 +380,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func openFolder(_ sender: Any?) { vault.chooseFolder() }
-    @objc func showFileSearch(_ sender: Any?) { sidebar.focusSearch() }
+    /// 検索欄はメインウィンドウのサイドバーにあるので、分離したウィンドウからはメインウィンドウを前に出す
+    @objc func showFileSearch(_ sender: Any?) {
+        if activeDetached != nil { window.makeKeyAndOrderFront(nil) }
+        sidebar.focusSearch()
+    }
+    /// 保存待ちの本文はウィンドウをまたいで持つので、どのウィンドウからでもまとめて書く
     @objc func save(_ sender: Any?) { vault.saveNow() }
-    @objc func newTab(_ sender: Any?) { vault.newTab() }
-    /// 何も開いていないタブが1つだけなら、ウィンドウを閉じる
+    @objc func newTab(_ sender: Any?) { activeVault.newTab() }
+    /// 何も開いていないタブが1つだけなら、ウィンドウを閉じる。分離したウィンドウは最後のタブを閉じたら閉じる
     @objc func closeTab(_ sender: Any?) {
-        if vault.tabs.count == 1, vault.activeTab.url == nil {
+        if let detached = activeDetached {
+            let vault = detached.vault
+            if vault.tabs.count == 1 { detached.window.performClose(sender) } else { vault.closeTab(at: vault.activeIndex) }
+        } else if vault.tabs.count == 1, vault.activeTab.url == nil {
             window.performClose(sender)
         } else {
             vault.closeTab(at: vault.activeIndex)
         }
     }
-    @objc func selectNextTab(_ sender: Any?) { vault.selectTab(at: (vault.activeIndex + 1) % vault.tabs.count) }
+    @objc func selectNextTab(_ sender: Any?) {
+        let vault = activeVault
+        vault.selectTab(at: (vault.activeIndex + 1) % vault.tabs.count)
+    }
     @objc func selectPreviousTab(_ sender: Any?) {
+        let vault = activeVault
         vault.selectTab(at: (vault.activeIndex + vault.tabs.count - 1) % vault.tabs.count)
     }
     /// ⌘1〜⌘8 はその番号のタブ、⌘9 は右端のタブ
     @objc func selectTabByNumber(_ sender: NSMenuItem) {
+        let vault = activeVault
         vault.selectTab(at: sender.tag == 9 ? vault.tabs.count - 1 : sender.tag - 1)
     }
     @objc func openTodayNote(_ sender: Any?) {
-        vault.openDailyNote(for: Date())
+        activeVault.openDailyNote(for: Date())
         sidebar.calendarView.show(month: Date())
     }
 

@@ -2,6 +2,7 @@ import AppKit
 
 /// エディタの上端（タイトルバーの位置）に並べるタブ。Chrome のように、選択中のタブだけ本文と同じ色にしてつなげる。
 /// クリックで選択、× か中クリックで閉じる、ドラッグで並べ替え、何もないところのドラッグでウィンドウを動かす。
+/// タブをウィンドウの外までドラッグして離すと、別のウィンドウに分離する（タブが2つ以上あるときだけ）。
 /// 左端には選択中のタブの「戻る」「進む」を置く
 final class TabBarView: NSView {
     static let height: CGFloat = 34
@@ -11,6 +12,8 @@ final class TabBarView: NSView {
     var onSelect: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
     var onMove: ((Int, Int) -> Void)?
+    /// タブをウィンドウの外で離したとき（タブの位置、離した位置の画面座標）
+    var onDetach: ((Int, NSPoint) -> Void)?
     var onNewTab: (() -> Void)?
     var canGoBack = false { didSet { needsDisplay = true } }
     var canGoForward = false { didSet { needsDisplay = true } }
@@ -36,8 +39,12 @@ final class TabBarView: NSView {
         let startX: CGFloat
         var offset: CGFloat = 0
         var moved = false
+        /// ウィンドウの外にいる（離すと分離する）
+        var outside = false
     }
     private var drag: Drag?
+    /// ウィンドウの外までドラッグしている間、マウスに付いてくるタブの絵
+    private var dragPreview: NSWindow?
     private var trackingArea: NSTrackingArea?
 
     override var isFlipped: Bool { true }
@@ -274,6 +281,18 @@ final class TabBarView: NSView {
         drag.offset = x - drag.startX
         if abs(drag.offset) > 3 { drag.moved = true }
         guard drag.moved else { return }
+        // ウィンドウの外ではタブの絵をマウスに付けて、並べ替えはしない
+        let outside = canDetach && window.map { !$0.frame.contains(NSEvent.mouseLocation) } == true
+        if outside != drag.outside {
+            drag.outside = outside
+            if outside { showDragPreview(for: drag.index) } else { hideDragPreview() }
+        }
+        if outside {
+            moveDragPreview()
+            self.drag = drag
+            needsDisplay = true
+            return
+        }
         // ドラッグ中のタブの中心が隣のタブの位置に入ったら入れ替える
         let center = tabsStart + (CGFloat(drag.index) + 0.5) * tabWidth + drag.offset
         let destination = min(max(Int((center - tabsStart) / tabWidth), 0), titles.count - 1)
@@ -290,6 +309,13 @@ final class TabBarView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        hideDragPreview()
+        if let drag, drag.outside, canDetach {
+            self.drag = nil
+            needsDisplay = true
+            onDetach?(drag.index, NSEvent.mouseLocation)
+            return
+        }
         if let pressed, target(at: point) == pressed {
             switch pressed {
             case .close(let index): onClose?(index)
@@ -304,6 +330,62 @@ final class TabBarView: NSView {
         drag = nil
         setHovered(target(at: point))
         needsDisplay = true
+    }
+
+    // MARK: - 分離
+
+    /// タブが1つだけのウィンドウからは分離しない（Obsidian と同じ）
+    private var canDetach: Bool { onDetach != nil && titles.count > 1 }
+
+    private func showDragPreview(for index: Int) {
+        let image = dragImage(for: index)
+        let preview = NSWindow(contentRect: CGRect(origin: .zero, size: image.size), styleMask: .borderless,
+                               backing: .buffered, defer: false)
+        preview.isReleasedWhenClosed = false
+        preview.isOpaque = false
+        preview.backgroundColor = .clear
+        preview.hasShadow = true
+        preview.level = .floating
+        preview.ignoresMouseEvents = true
+        let imageView = NSImageView(image: image)
+        imageView.frame = CGRect(origin: .zero, size: image.size)
+        preview.contentView = imageView
+        dragPreview = preview
+        moveDragPreview()
+        preview.orderFront(nil)
+    }
+
+    /// タブの左寄りをマウスの下に置く
+    private func moveDragPreview() {
+        guard let dragPreview else { return }
+        let mouse = NSEvent.mouseLocation
+        dragPreview.setFrameOrigin(NSPoint(x: mouse.x - 24, y: mouse.y - dragPreview.frame.height / 2))
+    }
+
+    private func hideDragPreview() {
+        dragPreview?.orderOut(nil)
+        dragPreview = nil
+    }
+
+    /// 選択中のタブと同じ見た目の、角を丸めたタブの絵
+    private func dragImage(for index: Int) -> NSImage {
+        let size = CGSize(width: tabWidth, height: bounds.height - tabTop)
+        let title = titles[index]
+        return NSImage(size: size, flipped: true) { rect in
+            NSColor.textBackgroundColor.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
+            NSColor.separatorColor.setStroke()
+            NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 7, yRadius: 7).stroke()
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byTruncatingTail
+            let text = NSAttributedString(string: title, attributes: [
+                .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.maText, .paragraphStyle: paragraph,
+            ])
+            let height = text.size().height
+            text.draw(with: CGRect(x: 12, y: rect.midY - height / 2, width: rect.width - 24, height: height),
+                      options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            return true
+        }
     }
 
     /// 中クリックで閉じる

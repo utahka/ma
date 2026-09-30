@@ -55,18 +55,45 @@ struct Tab: Identifiable {
     var title: String { url?.deletingPathExtension().lastPathComponent ?? "新しいタブ" }
 }
 
-/// 開いているフォルダ（vault）と、タブで開いているノートの読み書きを受け持つ
+/// ウィンドウをまたいで共有する vault の状態（フォルダ・ファイル一覧・お気に入り・保存待ちの本文）。
+/// タブと履歴はウィンドウごとの `Vault` が持つ
+@MainActor
+private final class VaultFolder {
+    var root: URL?
+    var tree: [FileNode] = []
+    var dailyNotes: DailyNotes?
+    var propertyTypes: PropertyTypes?
+    var bookmarks: [Bookmark] = []
+    var bookmarksData: Data?
+    var bookmarksLoaded = false
+    var pendingTexts: [URL: String] = [:]
+    var diskTexts: [URL: String] = [:]
+    var saveTask: Task<Void, Never>?
+    var baseCache: [String: (modified: Date, base: BaseFile?)] = [:]
+
+    private struct WeakVault { weak var vault: Vault? }
+    private var members: [WeakVault] = []
+    /// このフォルダを開いているウィンドウのタブ。先頭がメインウィンドウ
+    var vaults: [Vault] { members.compactMap(\.vault) }
+
+    func add(_ vault: Vault) { members.append(WeakVault(vault: vault)) }
+    func remove(_ vault: Vault) { members.removeAll { $0.vault == nil || $0.vault === vault } }
+}
+
+/// 開いているフォルダ（vault）と、1つのウィンドウのタブで開いているノートの読み書きを受け持つ。
+/// 分離したウィンドウは `init(sharingFolderWith:tab:viewState:)` で作り、フォルダの状態と保存はメインウィンドウと共有する
 @MainActor
 final class Vault {
-    private(set) var root: URL?
-    private(set) var tree: [FileNode] = []
-    private(set) var dailyNotes: DailyNotes?
-    private(set) var propertyTypes: PropertyTypes?
-    /// 同じファイルを2つのタブで開くことはない（開こうとしたらそのタブに切り替える）
+    private let folder: VaultFolder
+    private(set) var root: URL? { get { folder.root } set { folder.root = newValue } }
+    private(set) var tree: [FileNode] { get { folder.tree } set { folder.tree = newValue } }
+    private(set) var dailyNotes: DailyNotes? { get { folder.dailyNotes } set { folder.dailyNotes = newValue } }
+    private(set) var propertyTypes: PropertyTypes? { get { folder.propertyTypes } set { folder.propertyTypes = newValue } }
+    /// 同じファイルを2つのタブで開くことはない（開こうとしたらそのタブに切り替える）。ほかのウィンドウのタブとも重ねない
     private(set) var tabs = [Tab()]
     private(set) var activeIndex = 0
     var activeTab: Tab { tabs[activeIndex] }
-    private(set) var bookmarks: [Bookmark] = []
+    private(set) var bookmarks: [Bookmark] { get { folder.bookmarks } set { folder.bookmarks = newValue } }
 
     var onTreeChange: (() -> Void)?
     /// タブの並び・選択中のタブ・タブで開いているファイルが変わったとき
@@ -82,11 +109,15 @@ final class Vault {
     var resolveSaveConflict: ((URL) -> Bool)?
     /// ノートやプロパティ型が外部で変わったとき
     var onExternalChange: (() -> Void)?
+    /// ほかのウィンドウで開いているノートを開こうとして、このウィンドウのタブに切り替えたとき（ウィンドウを前面に出す）
+    var onRequestFocus: (() -> Void)?
+    /// メインウィンドウで別の vault を開いたとき。分離したウィンドウを閉じる
+    var onFolderClose: (() -> Void)?
 
-    private var pendingTexts: [URL: String] = [:]
+    private var pendingTexts: [URL: String] { get { folder.pendingTexts } set { folder.pendingTexts = newValue } }
     /// 最後に読み込み、または保存したディスク上の本文。外部変更との競合判定に使う
-    private var diskTexts: [URL: String] = [:]
-    private var saveTask: Task<Void, Never>?
+    private var diskTexts: [URL: String] { get { folder.diskTexts } set { folder.diskTexts = newValue } }
+    private var saveTask: Task<Void, Never>? { get { folder.saveTask } set { folder.saveTask = newValue } }
     /// 中身を読み込み済みのタブ。復元したタブは選ばれたときに読む
     private var loadedTabs: Set<Tab.ID> = []
     /// 戻る・進むで開いたタブの、読み込んだときに復元する表示位置
@@ -94,12 +125,38 @@ final class Vault {
     /// 次回の起動で開く vault のときだけ、開いているタブも記録する
     private var remembersTabs = false
     /// 最後に読んだ bookmarks.json の中身（nil はファイルがない）。変わっていなければ読み直さない
-    private var bookmarksData: Data?
-    private var bookmarksLoaded = false
+    private var bookmarksData: Data? { get { folder.bookmarksData } set { folder.bookmarksData = newValue } }
+    private var bookmarksLoaded: Bool { get { folder.bookmarksLoaded } set { folder.bookmarksLoaded = newValue } }
 
     private static let lastRootKey = "lastRoot"
     private static let tabsKey = "openTabs"
     private static let activeTabKey = "activeTab"
+
+    /// メインウィンドウ用
+    init() {
+        folder = VaultFolder()
+        folder.add(self)
+    }
+
+    /// 分離したウィンドウ用。フォルダ・ファイル一覧・お気に入り・保存待ちの本文は `other` と共有し、タブだけを別に持つ。
+    /// 開いているタブは記録しない（起動時に戻すのはメインウィンドウのタブだけ）。コールバックを設定してから `reloadTabs()` で読み込む
+    init(sharingFolderWith other: Vault, tab: Tab, viewState: NoteViewState?) {
+        folder = other.folder
+        tabs = [tab]
+        if let viewState { restoringViewStates[tab.id] = viewState }
+        folder.add(self)
+    }
+
+    /// 分離したウィンドウを閉じるとき。保存待ちの編集を書き、フォルダの共有から外れる
+    func leaveFolder() {
+        saveNow()
+        folder.remove(self)
+    }
+
+    /// 同じフォルダを開いているすべてのウィンドウに知らせる
+    private func broadcast(_ callback: KeyPath<Vault, (() -> Void)?>) {
+        for vault in folder.vaults { vault[keyPath: callback]?() }
+    }
 
     func restoreLastRoot() {
         guard let path = AppDefaults.shared.string(forKey: Self.lastRootKey),
@@ -130,6 +187,8 @@ final class Vault {
 
     /// `remember` が false のときは、次回の起動で開く vault として記録しない（vault の外のファイルを開いたときなど）
     func setRoot(_ url: URL, remember: Bool = true) {
+        // 分離したウィンドウは前の vault のノートを開いているので閉じる（閉じるときに保存する）
+        for vault in folder.vaults where vault !== self { vault.onFolderClose?() }
         saveNow()
         root = url
         tree = []
@@ -143,9 +202,9 @@ final class Vault {
         pendingTexts = [:]
         bookmarks = []
         bookmarksLoaded = false
-        onTreeChange?()
+        broadcast(\.onTreeChange)
         tabsDidChange()
-        onNotesChange?()
+        broadcast(\.onNotesChange)
         if remember { AppDefaults.shared.set(url.path, forKey: Self.lastRootKey) }
         rescan()
         reloadBookmarks()
@@ -158,7 +217,7 @@ final class Vault {
         bookmarksLoaded = true
         bookmarksData = data
         bookmarks = Bookmarks.parse(document["items"] as? [Any] ?? [], root: root)
-        onBookmarksChange?()
+        broadcast(\.onBookmarksChange)
     }
 
     func isBookmarked(_ url: URL) -> Bool {
@@ -219,7 +278,7 @@ final class Vault {
         default:
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
-        closeTabs(inside: url)
+        for vault in folder.vaults { vault.closeTabs(inside: url) }
         rescan()
     }
 
@@ -273,7 +332,7 @@ final class Vault {
             let scanned = await Task.detached { Self.scan(url) }.value
             guard root == url else { return }
             tree = scanned
-            onTreeChange?()
+            broadcast(\.onTreeChange)
         }
     }
 
@@ -290,7 +349,7 @@ final class Vault {
                 return
             }
             rescan()
-            onNotesChange?()
+            broadcast(\.onNotesChange)
         }
         open(url)
     }
@@ -300,6 +359,11 @@ final class Vault {
     func open(_ url: URL, newTab: Bool = false) {
         if let index = tabs.firstIndex(where: { $0.url?.path == url.path }) {
             selectTab(at: index)
+            return
+        }
+        if let (other, index) = otherWindowTab(showing: url) {
+            other.selectTab(at: index)
+            other.onRequestFocus?()
             return
         }
         saveNow()
@@ -323,10 +387,19 @@ final class Vault {
     func goBack() { navigate(forward: false) }
     func goForward() { navigate(forward: true) }
 
-    /// 消えたファイルと、ほかのタブで開いているファイル（同じファイルは2つのタブで開かない）は飛ばす
+    /// 消えたファイルと、ほかのタブ（ほかのウィンドウも含む）で開いているファイル（同じファイルは2つのタブで開かない）は飛ばす
     private func canNavigate(to entry: HistoryEntry) -> Bool {
         FileManager.default.fileExists(atPath: entry.url.path)
             && !tabs.contains { $0.id != activeTab.id && $0.url?.path == entry.url.path }
+            && otherWindowTab(showing: entry.url) == nil
+    }
+
+    /// ほかのウィンドウでそのファイルを開いているタブ
+    private func otherWindowTab(showing url: URL) -> (Vault, Int)? {
+        for vault in folder.vaults where vault !== self {
+            if let index = vault.tabs.firstIndex(where: { $0.url?.path == url.path }) { return (vault, index) }
+        }
+        return nil
     }
 
     private func navigate(forward: Bool) {
@@ -371,6 +444,22 @@ final class Vault {
         if index < activeIndex || activeIndex == tabs.count { activeIndex -= 1 }
         tabsDidChange()
     }
+
+    /// タブを別のウィンドウへ移すために取り外し、表示位置と一緒に返す。タブが1つだけなら取り外さない
+    func detachTab(at index: Int) -> (tab: Tab, viewState: NoteViewState?)? {
+        guard tabs.count > 1, tabs.indices.contains(index) else { return nil }
+        saveNow()
+        let tab = tabs[index]
+        let state = viewState?(tab.id)
+        loadedTabs.remove(tab.id)
+        tabs.remove(at: index)
+        if index < activeIndex || activeIndex == tabs.count { activeIndex -= 1 }
+        tabsDidChange()
+        return (tab, state)
+    }
+
+    /// 選択中のタブを読み込み、タブの表示を揃え直す（分離したウィンドウを作った直後に使う）
+    func reloadTabs() { tabsDidChange() }
 
     func moveTab(from source: Int, to destination: Int) {
         guard tabs.indices.contains(source), tabs.indices.contains(destination), source != destination else { return }
@@ -459,8 +548,10 @@ final class Vault {
                resolveSaveConflict?(url) != true {
                 if let current {
                     diskTexts[url] = current
-                    if let tab = tabs.first(where: { $0.url?.path == url.path }) {
-                        onLoad?(tab.id, OpenDocument(url: url, text: current, viewState: viewState?(tab.id)))
+                    // 保存待ちの本文はウィンドウをまたいで持つので、そのノートを開いているウィンドウで読み直す
+                    for vault in folder.vaults {
+                        guard let tab = vault.tabs.first(where: { $0.url?.path == url.path }) else { continue }
+                        vault.onLoad?(tab.id, OpenDocument(url: url, text: current, viewState: vault.viewState?(tab.id)))
                     }
                 }
                 continue
@@ -482,9 +573,17 @@ final class Vault {
         reloadBookmarks()
     }
 
-    /// 開いているノートとプロパティ型のうち、外部で変わったものを読み直す。タブの切り替えのたびに呼ぶので vault 全体は走査しない
+    /// 開いているノート（すべてのウィンドウ）とプロパティ型のうち、外部で変わったものを読み直す。
+    /// タブの切り替えのたびに呼ぶので vault 全体は走査しない
     private func reloadChangedNotes() {
         var changed = propertyTypes?.reload() == true
+        for vault in folder.vaults where vault.reloadChangedTabs() { changed = true }
+        if changed { broadcast(\.onExternalChange) }
+    }
+
+    /// このウィンドウのタブで開いているノートのうち、外部で変わったものを読み直す。読み直したら true
+    private func reloadChangedTabs() -> Bool {
+        var changed = false
         for tab in tabs where loadedTabs.contains(tab.id) {
             guard let url = tab.url, pendingTexts[url] == nil,
                   let text = try? String(contentsOf: url, encoding: .utf8), text != diskTexts[url]
@@ -497,7 +596,7 @@ final class Vault {
                 loadedTabs.remove(tab.id)
             }
         }
-        if changed { onExternalChange?() }
+        return changed
     }
 
     /// タブで開いていないノートのプロパティを、ファイルを直接書き換えて設定する
@@ -529,7 +628,10 @@ final class Vault {
     }
 
     /// 読み込んだ `.base`。更新日時が変わるまで使い回す
-    private var baseCache: [String: (modified: Date, base: BaseFile?)] = [:]
+    private var baseCache: [String: (modified: Date, base: BaseFile?)] {
+        get { folder.baseCache }
+        set { folder.baseCache = newValue }
+    }
 
     /// ノートが対象の `.base` に書かれた `ma:` の型。キーはプロパティ名（`note.` なし）。
     /// 複数の `.base` に当てはまるときは合わせる（同じプロパティは先に見つけた方）
