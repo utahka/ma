@@ -641,7 +641,7 @@ struct MarkdownStyler {
                 with: String(repeating: "\u{FFFC}", count: match.range.length)
             )
         }
-        // AI へのコメントは、選んだ文字をハイライトし、コメントは隠してホバーで出す。コメントの中は他の記法として読まない。
+        // AI へのコメントは、選んだ文字をハイライトし、コメントは隠してホバーでポップオーバーに出す。コメントの中は他の記法として読まない。
         // 選んだ文字の `==…==` に通常のハイライトの黄色が重ならないよう、ハイライトは AI へのコメント全体を塗りつぶした行で探す
         let highlightMasked = NSMutableString(string: masked)
         for match in aiComment.matches(in: masked as String, range: NSRange(location: 0, length: masked.length)) {
@@ -649,7 +649,8 @@ struct MarkdownStyler {
             let body = match.range(at: 1).offset(by: line.location)
             let comment = match.range(at: 2).offset(by: line.location)
             let note = string.substring(with: match.range(at: 3).offset(by: line.location))
-            storage.addAttributes([.backgroundColor: NSColor.maAIComment, .toolTip: "AI へのコメント: \(note)"], range: body)
+            storage.addAttribute(.backgroundColor, value: NSColor.maAIComment, range: body)
+            if !active { storage.addAttribute(.maAIComment, value: note, range: body) }
             marker(NSRange(location: whole.location, length: 2), in: storage, active: active)
             marker(NSRange(location: NSMaxRange(body), length: 2), in: storage, active: active)
             marker(comment, in: storage, active: active)
