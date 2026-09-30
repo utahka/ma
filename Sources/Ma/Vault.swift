@@ -47,6 +47,7 @@ final class Vault {
     private(set) var tabs = [Tab()]
     private(set) var activeIndex = 0
     var activeTab: Tab { tabs[activeIndex] }
+    private(set) var bookmarks: [Bookmark] = []
 
     var onTreeChange: (() -> Void)?
     /// タブの並び・選択中のタブ・タブで開いているファイルが変わったとき
@@ -55,6 +56,7 @@ final class Vault {
     var onLoad: ((Tab.ID, OpenDocument?) -> Void)?
     /// vault を開いたときとデイリーノートを作ったとき（カレンダーの点を打ち直す）
     var onNotesChange: (() -> Void)?
+    var onBookmarksChange: (() -> Void)?
 
     private var pendingTexts: [URL: String] = [:]
     private var saveTask: Task<Void, Never>?
@@ -62,6 +64,9 @@ final class Vault {
     private var loadedTabs: Set<Tab.ID> = []
     /// 次回の起動で開く vault のときだけ、開いているタブも記録する
     private var remembersTabs = false
+    /// 最後に読んだ bookmarks.json の中身（nil はファイルがない）。変わっていなければ読み直さない
+    private var bookmarksData: Data?
+    private var bookmarksLoaded = false
 
     private static let lastRootKey = "lastRoot"
     private static let tabsKey = "openTabs"
@@ -104,11 +109,80 @@ final class Vault {
         tabs = [Tab()]
         activeIndex = 0
         loadedTabs = []
+        bookmarks = []
+        bookmarksLoaded = false
         onTreeChange?()
         tabsDidChange()
         onNotesChange?()
         if remember { AppDefaults.shared.set(url.path, forKey: Self.lastRootKey) }
         rescan()
+        reloadBookmarks()
+    }
+
+    /// Obsidian で変えたブックマークも拾えるよう、vault を開いたときとアプリが前面に来たときに読み直す
+    func reloadBookmarks() {
+        guard let root, let (document, data) = Bookmarks.readDocument(root: root) else { return }
+        guard !bookmarksLoaded || data != bookmarksData else { return }
+        bookmarksLoaded = true
+        bookmarksData = data
+        bookmarks = Bookmarks.parse(document["items"] as? [Any] ?? [], root: root)
+        onBookmarksChange?()
+    }
+
+    func isBookmarked(_ url: URL) -> Bool {
+        guard let path = relativePath(of: url) else { return false }
+        func contains(_ bookmarks: [Bookmark]) -> Bool {
+            bookmarks.contains { bookmark in
+                if case .group(let children) = bookmark.kind { return contains(children) }
+                return bookmark.path.map { Bookmarks.samePath($0, path) } == true
+            }
+        }
+        return contains(bookmarks)
+    }
+
+    /// ノートかフォルダをブックマークに加える。すでにあれば（グループの中も含めて）外す
+    func toggleBookmark(_ url: URL) {
+        guard let path = relativePath(of: url) else { return }
+        updateBookmarks { items in
+            if Bookmarks.contains(path: path, in: items) { return Bookmarks.removing(path: path, from: items) }
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            let item: [String: Any] = [
+                "type": isDirectory ? "folder" : "file",
+                "ctime": Int64(Date().timeIntervalSince1970 * 1000),
+                "path": path,
+            ]
+            return items + [item]
+        }
+    }
+
+    /// 表示中のブックマークを外す。表示した後にファイルが変わっていたら位置がずれるので、読み直すだけにする
+    func removeBookmark(at indexPath: [Int]) {
+        updateBookmarks(requiresUnchanged: true) { Bookmarks.removing(at: indexPath, from: $0) }
+    }
+
+    private func updateBookmarks(requiresUnchanged: Bool = false, _ change: ([Any]) -> [Any]) {
+        guard let root else { return }
+        guard var (document, data) = Bookmarks.readDocument(root: root) else {
+            NSLog("ブックマークを読めないので変更しない: \(Bookmarks.fileURL(root: root).path)")
+            return
+        }
+        guard !requiresUnchanged || data == bookmarksData else {
+            reloadBookmarks()
+            return
+        }
+        document["items"] = change(document["items"] as? [Any] ?? [])
+        do {
+            try Bookmarks.write(document, root: root)
+        } catch {
+            NSLog("ブックマークの保存に失敗: \(error)")
+        }
+        reloadBookmarks()
+    }
+
+    /// vault からの相対パス。Obsidian に合わせて合成形（NFC）にする
+    private func relativePath(of url: URL) -> String? {
+        guard let root, url.path.hasPrefix(root.path + "/") else { return nil }
+        return String(url.path.dropFirst(root.path.count + 1)).precomposedStringWithCanonicalMapping
     }
 
     private func rescan() {
