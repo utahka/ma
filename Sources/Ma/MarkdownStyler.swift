@@ -77,7 +77,6 @@ struct MarkdownStyler {
         func isActive(_ range: NSRange) -> Bool { NSIntersectionRange(range, activeRange).length > 0 }
 
         var tables: [TableLayout] = []
-        var inFence = false
         var index = 0
         if let frontmatter {
             let hidden = lines.prefix { NSMaxRange($0.full) <= NSMaxRange(frontmatter.range) }
@@ -94,21 +93,19 @@ struct MarkdownStyler {
             let line = lines[index]
             let active = isActive(line.full)
 
-            if !inFence, let end = embedEnd(from: index, in: lines, text: text),
+            if let end = embedEnd(from: index, in: lines, text: text),
                !isActive(line.full.union(lines[end].full)),
                styleEmbed(Array(lines[index...end]), text: text, in: storage) {
                 index = end + 1
                 continue
             }
             if fence.firstMatch(in: text, range: line.content) != nil {
-                storage.addAttributes([.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor], range: line.content)
-                inFence.toggle()
-                index += 1
-                continue
-            }
-            if inFence {
-                storage.addAttributes([.font: monoFont, .backgroundColor: NSColor.quaternarySystemFill], range: line.content)
-                index += 1
+                // 閉じるフェンスがなければ文書の末尾までをコードとみなす
+                let close = lines[(index + 1)...].firstIndex { fence.firstMatch(in: text, range: $0.content) != nil }
+                let block = Array(lines[index...(close ?? lines.count - 1)])
+                styleCodeBlock(block, closed: close != nil, text: text, in: storage,
+                               blockActive: isActive(block.first!.full.union(block.last!.full)))
+                index += block.count
                 continue
             }
             if let end = tableEnd(from: index, in: lines, text: text) {
@@ -131,6 +128,44 @@ struct MarkdownStyler {
             index += 1
         }
         return tables
+    }
+
+    // MARK: - コードブロック
+
+    /// ``` / ~~~ で囲んだブロックを等幅にし、全行に同じ装飾を付けて背景を1枚の角丸で描かせる。
+    /// カーソルがブロックの外にあるあいだはフェンス行を隠して上下の余白にし、言語名は右上に控えめに描く
+    private func styleCodeBlock(_ block: [Line], closed: Bool, text: String, in storage: NSTextStorage, blockActive: Bool) {
+        let string = text as NSString
+        let language = string.substring(with: block[0].content)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "`~").union(.whitespaces))
+        let padding = CodeBlockDecoration.padding
+        for (offset, line) in block.enumerated() {
+            let isFence = offset == 0 || (closed && offset == block.count - 1)
+            let isLast = offset == block.count - 1
+            let style = NSMutableParagraphStyle()
+            style.firstLineHeadIndent = padding
+            style.headIndent = padding
+            style.tailIndent = -padding
+            style.lineSpacing = 2
+            var attributes: [NSAttributedString.Key: Any] = [.font: monoFont]
+            if isFence && !blockActive {
+                style.minimumLineHeight = CodeBlockDecoration.fenceHeight
+                style.maximumLineHeight = CodeBlockDecoration.fenceHeight
+                style.lineSpacing = 0
+                attributes = [.font: hiddenFont, .foregroundColor: NSColor.clear]
+            } else if isFence {
+                attributes[.foregroundColor] = NSColor.tertiaryLabelColor
+                // 見せているフェンス行が背景の端に張り付かないよう、段落の前後に余白を足す（背景はこの分も塗られる）
+                if offset == 0 { style.paragraphSpacingBefore = 4 } else { style.paragraphSpacing = 4 }
+            }
+            // 閉じていないブロックは最後の行の下に余白がないので、段落の後ろの間隔で補う
+            if isLast && !closed { style.paragraphSpacing = CodeBlockDecoration.fenceHeight }
+            let showsLanguage = offset == 1 && !blockActive && !language.isEmpty && !(closed && isLast)
+            attributes[.paragraphStyle] = style
+            attributes[.maBlock] = CodeBlockDecoration(isFirst: offset == 0, isLast: isLast,
+                                                       language: showsLanguage ? language : nil)
+            storage.addAttributes(attributes, range: line.full)
+        }
     }
 
     // MARK: - Link Embed
