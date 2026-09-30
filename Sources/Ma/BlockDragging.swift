@@ -35,7 +35,12 @@ final class BlockHandleView: NSView {
     override func mouseExited(with event: NSEvent) { isHovered = false; needsDisplay = true }
     override func mouseDown(with event: NSEvent) { NSCursor.closedHand.set(); onDragBegin?(event) }
     override func mouseDragged(with event: NSEvent) { onDrag?(event) }
-    override func mouseUp(with event: NSEvent) { NSCursor.openHand.set(); onDragEnd?(event) }
+    override func mouseUp(with event: NSEvent) {
+        onDragEnd?(event)
+        // 離した位置がつまみの外なら、本文の I ビームに戻す
+        let inside = !isHidden && bounds.contains(convert(event.locationInWindow, from: nil))
+        (inside ? NSCursor.openHand : NSCursor.iBeam).set()
+    }
 }
 
 /// ブロックのつまみの表示とドラッグを受け持つ。本文は素の Markdown のまま、行を入れ替える
@@ -82,6 +87,11 @@ final class BlockDragController {
         guard drag == nil else { return }
         handle.isHidden = true
         hoveredBlock = nil
+    }
+
+    /// つまみの上か。NSTextView の mouseMoved が I ビームに戻すので、EditorTextView がカーソルを付け直すのに使う
+    func isOnHandle(_ point: NSPoint) -> Bool {
+        !handle.isHidden && handle.frame.contains(point)
     }
 
     /// マウスのある行のブロックの先頭行の左に、つまみを出す
