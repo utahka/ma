@@ -78,6 +78,9 @@ final class EditorTextView: NSTextView {
     /// 列幅のドラッグ中に幅が変わったとき。セルの文字を新しい列の位置へ送り直すのに使う
     var onColumnDrag: (() -> Void)?
 
+    /// 折りたためるコールアウトの開閉の印をクリックしたとき。引数は見出し行の先頭の位置
+    var onToggleFold: ((Int) -> Void)?
+
     /// ドラッグ中の表の区切り行の位置と列幅。区切り行を書き換えるのは離したときだけなので、それまでは装飾にこの幅を渡す
     var draggedWidths: (separator: Int, widths: [CGFloat])? {
         columnDrag.map { ($0.layout.separatorRange.location, $0.layout.columnWidths) }
@@ -122,7 +125,7 @@ final class EditorTextView: NSTextView {
             NSCursor.openHand.set()
         } else if columnEdge(at: point) != nil {
             NSCursor.resizeLeftRight.set()
-        } else if checkbox(at: point) != nil || link(at: point) != nil || embed(at: point) != nil {
+        } else if checkbox(at: point) != nil || link(at: point) != nil || embed(at: point) != nil || foldButton(at: point) != nil {
             NSCursor.pointingHand.set()
         }
     }
@@ -143,6 +146,11 @@ final class EditorTextView: NSTextView {
         }
         if let link = link(at: point) {
             onOpenLink?(link, event.modifierFlags.contains(.command))
+            return
+        }
+        if let header = foldButton(at: point) {
+            // カーソルは動かさずに開閉する（super に渡すと、隠した行は高さがないのでカーソルが見出し行に入る）
+            onToggleFold?(header)
             return
         }
         if let (card, location) = embed(at: point) {
@@ -249,6 +257,27 @@ final class EditorTextView: NSTextView {
         guard let hit = fragment.checkboxes().first(where: { $0.rect.insetBy(dx: -3, dy: -3).contains(local) }) else { return nil }
         let paragraphStart = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
         return (NSRange(location: paragraphStart + hit.range.location, length: hit.range.length), hit.checked)
+    }
+
+    /// マウス位置が折りたためるコールアウトの開閉の印の上なら、見出し行の先頭の位置を返す。
+    /// カーソルがコールアウトの中にあるあいだは、たたまずに開いたままにしているので押せない
+    private func foldButton(at point: NSPoint) -> Int? {
+        let location = containerPoint(point)
+        guard let fragment = fragment(at: location), let box = fragment.decoration as? BoxDecoration,
+              fragment.foldButtonRect()?.offsetBy(dx: 0, dy: fragment.layoutFragmentFrame.minY).contains(location) == true,
+              let content = textLayoutManager?.textContentManager
+        else { return nil }
+        let header = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+        let string = self.string as NSString
+        var end = header
+        while end < string.length, string.character(at: end) == 0x3E {
+            end = NSMaxRange(string.lineRange(for: NSRange(location: end, length: 0)))
+        }
+        let selection = selectedRange()
+        let caret = min(selection.location, string.length)
+        let caretLines = string.lineRange(for: NSRange(location: caret, length: min(selection.length, string.length - caret)))
+        guard box.collapsed || NSIntersectionRange(caretLines, NSRange(location: header, length: end - header)).length == 0 else { return nil }
+        return header
     }
 
     /// マウス位置に Link Embed のカードがあれば、カードとブロックの先頭の文書内の位置を返す
@@ -369,10 +398,17 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     private var slashLocation: Int?
     /// 直前の編集で打った `/` の位置。textDidChange で一覧を出すか決める
     private var typedSlash: Int?
+    /// 開閉の印で開いた `[!note]-` の見出し行の先頭。カーソルが外にあってもたたまない
+    private var expandedCallouts: Set<Int> = []
 
     /// ソース表示（装飾なし）かどうか。切り替えと記録は EditorAreaViewController が受け持つ
     var sourceMode = false {
         didSet { if sourceMode != oldValue, isViewLoaded { restyle(force: true) } }
+    }
+
+    /// コールアウトのタイトルの左にアイコンを描くかどうか。切り替えと記録は EditorAreaViewController が受け持つ
+    var showsCalloutIcons = true {
+        didSet { if showsCalloutIcons != oldValue, isViewLoaded { restyle(force: true) } }
     }
 
     override func loadView() {
@@ -393,6 +429,11 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.textContainer?.widthTracksTextView = true
         textView.onTextWidthChange = { [weak self] in self?.restyle(force: true) }
         textView.onColumnDrag = { [weak self] in self?.restyle(force: true) }
+        textView.onToggleFold = { [weak self] header in
+            guard let self else { return }
+            if expandedCallouts.remove(header) == nil { expandedCallouts.insert(header) }
+            restyle(force: true)
+        }
         setUpProperties()
         slashMenu.onChoose = { [weak self] command in self?.applySlashCommand(command) }
         // 取り消し・やり直しでは textDidChange が呼ばれないことがあるので、ここでも保存と装飾をやり直す。
@@ -439,6 +480,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.string = document?.text ?? ""
         reportedText = textView.string
         schemaEntries = nil
+        expandedCallouts = []
         textView.undoManager?.removeAllActions()
         let length = (textView.string as NSString).length
         if let state = document?.viewState {
@@ -607,7 +649,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         let styled = NSTextStorage(attributedString: storage)
         tables = styler.apply(to: styled, activeRange: lines, availableWidth: textView.textWidth, sourceMode: sourceMode,
                               draggedWidths: textView.draggedWidths,
-                              frontmatter: frontmatter.flatMap { fm in height.map { (fm.range, $0) } })
+                              frontmatter: frontmatter.flatMap { fm in height.map { (fm.range, $0) } },
+                              calloutIcons: showsCalloutIcons, expandedCallouts: expandedCallouts)
         let string = storage.string as NSString
         storage.beginEditing()
         var position = 0
@@ -709,9 +752,26 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         editingProperties = false
     }
 
-    /// 隠したフロントマターを本文の編集で壊さないよう、一部だけにかかる書き換えは止める（全体を消すのは許す）
     func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
         if replacementString == "/", range.length == 0, !textView.hasMarkedText() { typedSlash = range.location }
+        let allowed = shouldAllowChange(in: range)
+        if allowed { shiftExpandedCallouts(replacing: range, with: replacementString) }
+        return allowed
+    }
+
+    /// 開閉の印で開いたコールアウトの位置を、書き換えで増減した文字数に合わせて動かす。書き換える範囲の中の見出しは忘れる
+    private func shiftExpandedCallouts(replacing range: NSRange, with replacement: String?) {
+        guard !expandedCallouts.isEmpty else { return }
+        let delta = ((replacement ?? "") as NSString).length - range.length
+        expandedCallouts = Set(expandedCallouts.compactMap { header in
+            if header < range.location { return header }
+            if header >= NSMaxRange(range) { return header + delta }
+            return nil
+        })
+    }
+
+    /// 隠したフロントマターを本文の編集で壊さないよう、一部だけにかかる書き換えは止める（全体を消すのは許す）
+    private func shouldAllowChange(in range: NSRange) -> Bool {
         // 取り消し・やり直しも止めない（止めると文字は戻るのに textDidChange が呼ばれず、保存されない）
         let undoManager = textView.undoManager
         guard !editingProperties, undoManager?.isUndoing != true, undoManager?.isRedoing != true,
@@ -735,7 +795,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         let caret = textView.selectedRange().location
         guard let table = tables.first(where: { NSLocationInRange(caret, $0.tableRange) || caret == $0.endOfLastRow }),
               let (row, column) = table.cell(containing: caret)
-        else { return continueList(selector, at: caret) }
+        else { return breakCalloutLine(selector, at: caret) || continueList(selector, at: caret) }
         let columns = table.columnWidths.count
         switch selector {
         case #selector(NSResponder.insertTab(_:)):
@@ -765,6 +825,18 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         default:
             return false
         }
+        return true
+    }
+
+    /// コールアウトの中で Shift+Enter を押したら、次の行にも同じ深さの `>` を付けてコールアウトの中で改行する
+    private func breakCalloutLine(_ selector: Selector, at caret: Int) -> Bool {
+        let shiftReturn = selector == #selector(NSResponder.insertNewline(_:)) && NSApp.currentEvent?.modifierFlags.contains(.shift) == true
+        guard shiftReturn || selector == #selector(NSResponder.insertLineBreak(_:)),
+              let edit = CalloutLineBreak.edit(in: textView.string as NSString, caret: caret)
+        else { return false }
+        textView.replace(edit.range, with: edit.replacement, actionName: "改行")
+        textView.setSelectedRange(NSRange(location: edit.caret, length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
         return true
     }
 

@@ -75,3 +75,28 @@ enum ListContinuation {
         return inside
     }
 }
+
+/// コールアウトの中で Shift+Enter を押したときの書き換え。改行して、次の行にも今の行と同じ深さの `>` を付ける
+enum CalloutLineBreak {
+    private static let prefix = try! NSRegularExpression(pattern: #"^(?:>[ \t]?)+"#)
+    private static let header = try! NSRegularExpression(pattern: #"^(?:>[ \t]?)+\[![A-Za-z-]+\]"#)
+
+    /// カーソルがコールアウトの中（行頭の `>` より後ろ）にあれば、改行と `>` を差し込む書き換えを返す
+    static func edit(in string: NSString, caret: Int) -> ListContinuation.Edit? {
+        let text = string as String
+        let lineRange = string.lineRange(for: NSRange(location: caret, length: 0))
+        guard let match = prefix.firstMatch(in: text, range: lineRange), caret >= NSMaxRange(match.range) else { return nil }
+        // 引用のブロックを上へたどり、コールアウトの見出し行があるか調べる
+        var line = lineRange
+        while header.firstMatch(in: text, range: line) == nil {
+            guard line.location > 0 else { return nil }
+            line = string.lineRange(for: NSRange(location: line.location - 1, length: 0))
+            guard prefix.firstMatch(in: text, range: line) != nil else { return nil }
+        }
+        var quote = string.substring(with: match.range)
+        if !quote.hasSuffix(" ") && !quote.hasSuffix("\t") { quote += " " }
+        let insertion = "\n" + quote
+        return ListContinuation.Edit(range: NSRange(location: caret, length: 0), replacement: insertion,
+                                     caret: caret + (insertion as NSString).length)
+    }
+}

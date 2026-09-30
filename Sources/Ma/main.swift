@@ -308,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         let view = NSMenu(title: "表示")
         view.addItem(withTitle: "ソース表示", action: #selector(EditorAreaViewController.toggleSourceMode(_:)), keyEquivalent: "e")
+        view.addItem(withTitle: "コールアウトのアイコン", action: #selector(EditorAreaViewController.toggleCalloutIcons(_:)), keyEquivalent: "")
         let toggle = view.addItem(withTitle: "サイドバーを切り替え", action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "s")
         toggle.keyEquivalentModifierMask = [.command, .control]
         view.addItem(.separator())
