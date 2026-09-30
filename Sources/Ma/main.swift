@@ -140,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         editor.tabBar.onForward = { [weak vault] in vault?.goForward() }
         vault.viewState = { [weak editor] tab in editor?.viewState(of: tab) }
         vault.onLoad = { [weak editor] tab, document in editor?.show(document, in: tab) }
+        vault.isComposing = { [weak editor] tab in editor?.isComposing(in: tab) == true }
         vault.resolveSaveConflict = { url in
             let alert = NSAlert()
             alert.messageText = "ファイルが外部で変更されています"
@@ -219,7 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             }
             return nil
         }
-        // Obsidian などで変えたノート・プロパティ型・ブックマークを反映する
+        // Obsidian などで変えたノート・プロパティ型・ブックマークを反映する。ふだんはフォルダの監視で反映するので、その取りこぼしの保険
         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) {
             [vault] _ in MainActor.assumeIsolated { vault.refreshExternalChanges() }
         }

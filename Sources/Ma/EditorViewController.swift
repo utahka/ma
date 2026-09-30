@@ -139,6 +139,13 @@ final class EditorTextView: NSTextView {
         closeCommentPopover()
     }
 
+    /// 外部の変更で本文を直接差し替えたとき。編集ではないので didChangeText は呼ばず（保存し直さない）、ブロックの読み直しだけ行う
+    func textDidReload() {
+        hideAddRowButton()
+        blockDrag.textDidChange()
+        closeCommentPopover()
+    }
+
     // カーソルが入るとその行は記号とコメントがそのまま見えるので、吹き出しは閉じる
     override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
@@ -564,6 +571,10 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     }
 
     func show(_ document: OpenDocument?) {
+        if let document, document.isReload, document.url == url {
+            reload(document.text)
+            return
+        }
         closeSlashMenu()
         url = document?.url
         placeholder.isHidden = document != nil
@@ -593,6 +604,56 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         focus()
     }
 
+    /// 外部で書き換えられた本文に差し替える。前後の一致する部分を残して違う部分だけを置き換えるので、
+    /// 変わっていない段落のレイアウトとスクロール位置はそのまま残る。カーソルは置き換えた範囲の後ろなら文字数の増減だけずらす。
+    /// 取り消しの履歴は位置が合わなくなるので捨てる。フォーカスは動かさない
+    private func reload(_ text: String) {
+        guard let storage = textView.textStorage else { return }
+        let old = textView.string as NSString
+        let new = text as NSString
+        var prefix = 0
+        let shorter = min(old.length, new.length)
+        while prefix < shorter, old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        var suffix = 0
+        while suffix < shorter - prefix, old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        let range = NSRange(location: prefix, length: old.length - prefix - suffix)
+        let replacement = new.substring(with: NSRange(location: prefix, length: new.length - prefix - suffix))
+        guard range.length > 0 || !replacement.isEmpty else { return }
+        let delta = (replacement as NSString).length - range.length
+        func moved(_ location: Int) -> Int {
+            if location <= range.location { return location }
+            if location >= NSMaxRange(range) { return location + delta }
+            return range.location + min(location - range.location, (replacement as NSString).length)
+        }
+        let selection = textView.selectedRange()
+        let start = moved(selection.location)
+        let end = moved(NSMaxRange(selection))
+        // 画面より上が書き換わったら、上端に見えていた行が同じ高さに残るようにスクロールをずらす
+        let topCharacter = topVisibleCharacter()
+        var anchor: CGFloat?
+        if range.location < topCharacter {
+            ensureLayout(through: topCharacter + 1000)
+            anchor = top(ofCharacter: topCharacter)
+        }
+
+        closeSlashMenu()
+        shiftExpandedCallouts(replacing: range, with: replacement)
+        storage.replaceCharacters(in: range, with: replacement)
+        textView.textDidReload()
+        reportedText = textView.string
+        schemaEntries = nil
+        textView.undoManager?.removeAllActions()
+        textView.setSelectedRange(NSRange(location: start, length: max(end - start, 0)))
+        restyle(force: true)
+        if anchor != nil { ensureLayout(through: moved(topCharacter) + 1000) }
+        if let anchor, let shifted = top(ofCharacter: moved(topCharacter)), shifted != anchor {
+            textView.scroll(NSPoint(x: 0, y: textView.visibleRect.minY + shifted - anchor))
+        }
+    }
+
+    /// 日本語の変換中（未確定の文字がある）か
+    var isComposing: Bool { textView.hasMarkedText() }
+
     /// 戻る・進むで戻ってきたときに復元するための、カーソルと画面の上端の位置
     var viewState: NoteViewState? {
         guard url != nil else { return nil }
@@ -612,19 +673,33 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     /// その文字の行が画面の上端に来るようにスクロールする。TextKit 2 は画面外の高さを見積もりで持つので、手前までレイアウトしてから位置を求める
     private func scroll(toCharacter index: Int) {
+        guard let top = top(ofCharacter: index) else { return textView.scrollToBeginningOfDocument(nil) }
+        // 最初の行なら上端の余白も見せる
+        textView.scroll(NSPoint(x: 0, y: top <= 0 ? 0 : top + textView.textContainerOrigin.y))
+    }
+
+    /// 先頭からその文字までをレイアウトする。書き換えた段落は、測る位置より後ろまで含めてレイアウトし直さないと古い高さのままだった
+    private func ensureLayout(through index: Int) {
+        guard let layoutManager = textView.textLayoutManager, let content = layoutManager.textContentManager,
+              let end = content.location(content.documentRange.location, offsetBy: min(index, (textView.string as NSString).length)),
+              let range = NSTextRange(location: content.documentRange.location, end: end)
+        else { return }
+        layoutManager.ensureLayout(for: range)
+    }
+
+    /// その文字の行の上端（テキストコンテナの座標）。TextKit 2 は画面外の高さを見積もりで持つので、手前までレイアウトしてから求める
+    private func top(ofCharacter index: Int) -> CGFloat? {
         guard let layoutManager = textView.textLayoutManager, let content = layoutManager.textContentManager,
               let location = content.location(content.documentRange.location, offsetBy: index),
               let range = NSTextRange(location: content.documentRange.location, end: location)
-        else { return }
+        else { return nil }
         layoutManager.ensureLayout(for: range)
         var top: CGFloat?
         layoutManager.enumerateTextSegments(in: NSTextRange(location: location), type: .standard, options: []) { _, frame, _, _ in
             top = frame.minY
             return false
         }
-        guard let top else { return textView.scrollToBeginningOfDocument(nil) }
-        // 最初の行なら上端の余白も見せる
-        textView.scroll(NSPoint(x: 0, y: top <= 0 ? 0 : top + textView.textContainerOrigin.y))
+        return top
     }
 
     func focus() {
