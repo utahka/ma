@@ -11,6 +11,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
 
     private enum Row {
         case group(BaseValue, property: String, count: Int)
+        /// グループごとに出す列の見出し（Notion と同じく、グループの下に列名を並べる）
+        case header
         case note(NoteRecord)
     }
 
@@ -21,6 +23,9 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     /// 日付の列（値は時刻を含むかどうか）。型が登録されていない列は、値がすべて日付の形なら日付とみなす
     private var dateColumns: [String: Bool] = [:]
     private var selectedView = 0
+    private var groups: [BaseFile.Group] = []
+    /// 畳んだグループの値。`.base` のビューごとに `collapsedGroups` に記録する
+    private var collapsed: Set<String> = []
     /// 列を作り直しているあいだは、幅や順番の変化を保存しない
     private var isSettingColumns = false
     private var saveColumnsTask: Task<Void, Never>?
@@ -28,7 +33,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     private let viewPicker = NSSegmentedControl()
     private let countLabel = NSTextField(labelWithString: "")
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
-    private let tableView = NSTableView()
+    private let tableView = BaseTableView()
+    private lazy var headerView = tableView.headerView
     private let scrollView = NSScrollView()
 
     private static let font = NSFont.systemFont(ofSize: 13)
@@ -56,6 +62,12 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         tableView.target = self
         tableView.action = #selector(clickRow(_:))
         tableView.doubleAction = #selector(doubleClickRow(_:))
+        // グループの行は Notion と同じく、表と一緒に流す
+        tableView.floatsGroupRows = false
+        tableView.isHeaderRow = { [weak self] row in
+            guard let self, self.rows.indices.contains(row), case .header = self.rows[row] else { return false }
+            return true
+        }
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
@@ -124,6 +136,31 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         rebuild()
     }
 
+    // MARK: - グループの開閉
+
+    private static let collapsedKey = "collapsedGroups"
+
+    private var collapsedStoreKey: String? {
+        guard let url, let base, base.views.indices.contains(selectedView) else { return nil }
+        return url.path + "#" + base.views[selectedView].name
+    }
+
+    private func loadCollapsed() {
+        let stored = AppDefaults.shared.dictionary(forKey: Self.collapsedKey) as? [String: [String]] ?? [:]
+        collapsed = Set(collapsedStoreKey.flatMap { stored[$0] } ?? [])
+    }
+
+    private func toggleGroup(_ value: BaseValue) {
+        let key = value.text
+        if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }
+        if let storeKey = collapsedStoreKey {
+            var stored = AppDefaults.shared.dictionary(forKey: Self.collapsedKey) as? [String: [String]] ?? [:]
+            stored[storeKey] = collapsed.isEmpty ? nil : collapsed.sorted()
+            AppDefaults.shared.set(stored, forKey: Self.collapsedKey)
+        }
+        layOutRows()
+    }
+
     private func rebuild() {
         guard let base, base.views.indices.contains(selectedView) else {
             return showMessage("ビューがありません")
@@ -132,7 +169,6 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         guard view.type == "table" else {
             return showMessage("このビューの種類（\(view.type)）はまだ表示できません")
         }
-        let groups: [BaseFile.Group]
         do {
             groups = try base.evaluate(view, notes: notes, types: propertyTypes())
         } catch {
@@ -164,11 +200,23 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         rows = []
         tableView.reloadData()
         setColumns(view, base: base)
+        // グループに分けるときは、表の上の見出しの代わりにグループごとに列名を出す
+        tableView.headerView = view.groupBy == nil ? headerView : nil
+        loadCollapsed()
+        layOutRows()
+    }
+
+    /// グループと開閉の状態から行を並べ直す
+    private func layOutRows() {
+        guard let base, base.views.indices.contains(selectedView) else { return }
+        let groupBy = base.views[selectedView].groupBy
         rows = groups.flatMap { group -> [Row] in
-            guard let value = group.value, let groupBy = view.groupBy else { return group.notes.map(Row.note) }
-            return [.group(value, property: groupBy.property, count: group.notes.count)] + group.notes.map(Row.note)
+            guard let value = group.value, let groupBy else { return group.notes.map(Row.note) }
+            let title = Row.group(value, property: groupBy.property, count: group.notes.count)
+            return collapsed.contains(value.text) ? [title] : [title, .header] + group.notes.map(Row.note)
         }
         tableView.reloadData()
+        view.window?.invalidateCursorRects(for: tableView)
     }
 
     private func showMessage(_ message: String) {
@@ -252,8 +300,14 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        if case .group = rows[row] { return false }
-        return true
+        if case .note = rows[row] { return true }
+        return false
+    }
+
+    /// グループの行は上に余白を取り、前のグループと離す
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if case .group = rows[row] { return row == 0 ? 36 : 56 }
+        return tableView.rowHeight
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -280,12 +334,33 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
                 label.textColor = .maText
                 title = label
             }
-            let stack = NSStackView(views: [title, field])
+            let disclosure = ClosureButton(image: Self.disclosureImage(collapsed: collapsed.contains(value.text))) { [weak self] in
+                self?.toggleGroup(value)
+            }
+            disclosure.contentTintColor = .secondaryLabelColor
+            disclosure.setAccessibilityLabel(collapsed.contains(value.text) ? "グループを開く" : "グループを畳む")
+            disclosure.widthAnchor.constraint(equalToConstant: 16).isActive = true
+            let stack = NSStackView(views: [disclosure, title, field])
             stack.spacing = 8
+            stack.setCustomSpacing(6, after: disclosure)
             if let chips = title as? ChipsView {
                 chips.widthAnchor.constraint(equalToConstant: chips.chips.reduce(0) { $0 + Self.chipWidth($1) }).isActive = true
                 chips.heightAnchor.constraint(equalToConstant: 24).isActive = true
             }
+            content = stack
+        case .header:
+            guard let property = tableColumn?.identifier.rawValue else { return nil }
+            let icon = NSImageView(image: NSImage(systemSymbolName: symbolName(of: property), accessibilityDescription: nil) ?? NSImage())
+            icon.symbolConfiguration = .init(pointSize: 11, weight: .regular)
+            icon.contentTintColor = .tertiaryLabelColor
+            field.stringValue = tableColumn?.title ?? property
+            field.font = .systemFont(ofSize: 12)
+            field.textColor = .secondaryLabelColor
+            // 列が狭いときは列名のほうを切り詰め、アイコンは残す
+            icon.setContentCompressionResistancePriority(.required, for: .horizontal)
+            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let stack = NSStackView(views: [icon, field])
+            stack.spacing = 5
             content = stack
         case .note(let note):
             guard let property = tableColumn?.identifier.rawValue else { return nil }
@@ -347,15 +422,40 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         cell.textField = content as? CellTextField
         cell.addSubview(content)
         content.translatesAutoresizingMaskIntoConstraints = false
+        // グループの行は上に取った余白の下、見出しの行の高さの中央に置く
+        let isGroup = if case .group = rows[row] { true } else { false }
         NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+            content.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: isGroup ? 4 : 8),
             content.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8),
-            content.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            isGroup
+                ? content.centerYAnchor.constraint(equalTo: cell.bottomAnchor, constant: -tableView.rowHeight / 2)
+                : content.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         if content is ChipsView || content is CellTextField || content is DateCell {
             content.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8).isActive = true
         }
         return cell
+    }
+
+    private static func disclosureImage(collapsed: Bool) -> NSImage {
+        let image = NSImage(systemSymbolName: collapsed ? "arrowtriangle.right.fill" : "arrowtriangle.down.fill", accessibilityDescription: nil) ?? NSImage()
+        return image.withSymbolConfiguration(.init(pointSize: 9, weight: .regular)) ?? image
+    }
+
+    /// 列の見出しに添える型のアイコン
+    private func symbolName(of property: String) -> String {
+        if property == "file.name" || property == "file.basename" { return "textformat" }
+        if property.hasPrefix("file.") { return dateColumns[property] != nil || property.hasSuffix("time") ? "clock" : "doc" }
+        if let schema = base?.schemas[property] {
+            switch schema.kind {
+            case .status: return "circle.dashed"
+            case .select: return "chevron.down.circle"
+            case .multiSelect: return "list.bullet"
+            }
+        }
+        if let includesTime = dateColumns[property] { return includesTime ? "clock" : "calendar" }
+        guard let key = Self.noteKey(property) else { return "text.alignleft" }
+        return propertyTypes()[key]?.symbolName ?? "text.alignleft"
     }
 
     private static func chipWidth(_ chip: ChipsView.Chip) -> CGFloat {
@@ -390,11 +490,90 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     /// ノートの名前の列をクリックしたらノートを開く（⌘クリックは新しいタブ）
     @objc private func clickRow(_ sender: Any?) {
         let row = tableView.clickedRow, column = tableView.clickedColumn
+        if rows.indices.contains(row), case .group(let value, _, _) = rows[row] { return toggleGroup(value) }
         guard rows.indices.contains(row), tableView.tableColumns.indices.contains(column),
               case .note(let note) = rows[row],
               ["file.name", "file.basename"].contains(tableView.tableColumns[column].identifier.rawValue)
         else { return }
         onOpenNote?(note.url, NSApp.currentEvent?.modifierFlags.contains(.command) == true)
+    }
+}
+
+/// 押したらクロージャを呼ぶ、枠のないボタン
+private final class ClosureButton: NSButton {
+    private let onPress: () -> Void
+
+    init(image: NSImage, onPress: @escaping () -> Void) {
+        self.onPress = onPress
+        super.init(frame: .zero)
+        self.image = image
+        isBordered = false
+        target = self
+        action = #selector(press)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func press() { onPress() }
+}
+
+/// グループごとの列の見出しの行で、列の境界のドラッグで幅を、見出しのドラッグで順番を変えられる表
+/// （グループに分けたときは表の上の見出しを出さないので、その代わり）
+private final class BaseTableView: NSTableView {
+    var isHeaderRow: (Int) -> Bool = { _ in false }
+
+    private static let grabWidth: CGFloat = 4
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = row(at: point)
+        guard row >= 0, isHeaderRow(row) else { return super.mouseDown(with: event) }
+        if let column = resizableColumn(at: point) {
+            trackResize(of: tableColumns[column], from: point)
+        } else if case let column = self.column(at: point), column >= 0, allowsColumnReordering {
+            trackMove(of: column)
+        }
+    }
+
+    /// 境界の左の列（右端が point の近くにある列）
+    private func resizableColumn(at point: NSPoint) -> Int? {
+        tableColumns.indices.first { abs(rect(ofColumn: $0).maxX - point.x) <= Self.grabWidth }
+    }
+
+    private func trackResize(of column: NSTableColumn, from start: NSPoint) {
+        let startWidth = column.width
+        while let event = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]), event.type == .leftMouseDragged {
+            let x = convert(event.locationInWindow, from: nil).x
+            column.width = min(column.maxWidth, max(column.minWidth, (startWidth + x - start.x).rounded()))
+        }
+        window?.invalidateCursorRects(for: self)
+    }
+
+    /// 掴んだ列を、ポインタのある列の位置へ移していく
+    private func trackMove(of start: Int) {
+        var current = start
+        NSCursor.closedHand.push()
+        defer { NSCursor.pop() }
+        while let event = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]), event.type == .leftMouseDragged {
+            autoscroll(with: event)
+            let target = column(at: convert(event.locationInWindow, from: nil))
+            guard target >= 0, target != current else { continue }
+            moveColumn(current, toColumn: target)
+            current = target
+        }
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        let visible = rows(in: visibleRect)
+        for row in visible.lowerBound..<visible.upperBound where isHeaderRow(row) {
+            let rowRect = rect(ofRow: row)
+            for column in tableColumns.indices {
+                let x = rect(ofColumn: column).maxX
+                addCursorRect(NSRect(x: x - Self.grabWidth, y: rowRect.minY, width: Self.grabWidth * 2, height: rowRect.height), cursor: .resizeLeftRight)
+            }
+        }
     }
 }
 
@@ -459,7 +638,12 @@ private final class CellCheckbox: NSButton {
 private final class SubtleRowView: NSTableRowView {
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)
-        guard !isGroupRowStyle else { return }
+        if isGroupRowStyle {
+            // 既定のグループの行の灰色の帯は描かない
+            NSColor.textBackgroundColor.setFill()
+            bounds.fill()
+            return
+        }
         let scale = window?.backingScaleFactor ?? 2
         // withAlphaComponent は不透明度を置き換えるので、元から薄い separatorColor に使うと逆に濃くなる
         NSColor.labelColor.withAlphaComponent(0.08).setFill()
