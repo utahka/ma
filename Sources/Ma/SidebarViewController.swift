@@ -47,13 +47,14 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     override func loadView() {
         let buttons = NSStackView()
         buttons.orientation = .horizontal
+        // 開閉ボタンの位置は `TrafficLights.sidebarToggleLeading` と一致させる
         buttons.spacing = 4
         for (mode, symbol, label) in [(Mode.files, "folder", "ファイル"), (.bookmarks, "star", "お気に入り")] {
             let button = NSButton(image: Self.centeredSymbol(symbol, label: label), target: self, action: #selector(modeButtonClicked(_:)))
             // 選んでいる一覧は枠ではなく色で示す
             button.isBordered = false
             button.refusesFirstResponder = true
-            button.widthAnchor.constraint(equalToConstant: 26).isActive = true
+            button.widthAnchor.constraint(equalToConstant: TrafficLights.sidebarButtonWidth).isActive = true
             button.toolTip = label
             button.tag = mode == .files ? 0 : 1
             modeButtons[mode] = button
@@ -67,7 +68,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         toggle.contentTintColor = .secondaryLabelColor
         toggle.widthAnchor.constraint(equalToConstant: TrafficLights.sidebarToggleWidth).isActive = true
         toggle.toolTip = "サイドバーを閉じる"
-        if let favorite = modeButtons[.bookmarks] { buttons.setCustomSpacing(12, after: favorite) }
+        if let favorite = modeButtons[.bookmarks] { buttons.setCustomSpacing(TrafficLights.sidebarToggleGap, after: favorite) }
         buttons.addArrangedSubview(toggle)
 
         for (mode, outlineView) in [(Mode.files, filesView), (.bookmarks, bookmarksView)] {
@@ -113,7 +114,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         var constraints = [
             // 信号機ボタンの右に、タブの文字と同じ高さで並べる（上に余白を取る）
             buttons.centerYAnchor.constraint(equalTo: container.topAnchor, constant: TrafficLights.centerY),
-            buttons.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: TrafficLights.sidebarToggleLeading),
+            buttons.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: TrafficLights.sidebarButtonsLeading),
             separator.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
             separator.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
             calendarView.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: padding / 2),

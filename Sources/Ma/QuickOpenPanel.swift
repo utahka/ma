@@ -2,7 +2,7 @@ import AppKit
 
 /// vault 内のノートと `.base` を名前・パスで絞り込み、キーボードから開くための小さなパネル
 @MainActor
-final class QuickOpenPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
+final class QuickOpenPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
     private struct Item {
         let url: URL
         let path: String
@@ -10,7 +10,7 @@ final class QuickOpenPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate
 
     private let panel = NSPanel(
         contentRect: NSRect(x: 0, y: 0, width: 520, height: 360),
-        styleMask: [.titled, .closable], backing: .buffered, defer: false
+        styleMask: [.titled], backing: .buffered, defer: false
     )
     private let search = NSSearchField()
     private let table = NSTableView()
@@ -21,13 +21,12 @@ final class QuickOpenPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate
     override init() {
         super.init()
         panel.title = "ファイルを検索"
-        panel.delegate = self
         panel.isReleasedWhenClosed = false
 
         search.placeholderString = "ファイル名またはパス"
         search.delegate = self
-        search.target = self
-        search.action = #selector(openSelected(_:))
+        // 既定では入力の途中でも action が送られ、打ちかけの語で開いてしまう。確定は Return だけで行う
+        search.sendsWholeSearchString = true
 
         let column = NSTableColumn(identifier: .init("path"))
         table.addTableColumn(column)
@@ -37,6 +36,8 @@ final class QuickOpenPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate
         table.delegate = self
         table.target = self
         table.doubleAction = #selector(openSelected(_:))
+        // クリックしても検索欄からフォーカスを動かさず、キー操作（Esc など）を検索欄で受け続ける
+        table.refusesFirstResponder = true
 
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -73,6 +74,30 @@ final class QuickOpenPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate
 
     func controlTextDidChange(_ obj: Notification) { filter() }
 
+    /// 検索欄にフォーカスを置いたまま、↑↓ で候補を選び、Return で開き、Esc で閉じる
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.moveUp(_:)): moveSelection(by: -1)
+        case #selector(NSResponder.moveDown(_:)): moveSelection(by: 1)
+        case #selector(NSResponder.insertNewline(_:)): openSelected(nil)
+        case #selector(NSResponder.cancelOperation(_:)): close()
+        default: return false
+        }
+        return true
+    }
+
+    private func moveSelection(by offset: Int) {
+        guard !items.isEmpty else { return }
+        let row = min(max(table.selectedRow + offset, 0), items.count - 1)
+        table.selectRowIndexes([row], byExtendingSelection: false)
+        table.scrollRowToVisible(row)
+    }
+
+    private func close() {
+        if let parent = panel.sheetParent { parent.endSheet(panel) }
+        onOpen = nil
+    }
+
     private func filter() {
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             .precomposedStringWithCanonicalMapping.lowercased()
@@ -89,7 +114,10 @@ final class QuickOpenPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate
             return lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
         }
         table.reloadData()
-        if !items.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+        if !items.isEmpty {
+            table.selectRowIndexes([0], byExtendingSelection: false)
+            table.scrollRowToVisible(0)
+        }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
@@ -120,12 +148,8 @@ final class QuickOpenPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate
         guard items.indices.contains(row) else { return }
         let item = items[row]
         let newTab = NSApp.currentEvent?.modifierFlags.contains(.command) == true
-        if let parent = panel.sheetParent { parent.endSheet(panel) }
+        let onOpen = onOpen
+        close()
         onOpen?(item.url, newTab)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        if let parent = panel.sheetParent { parent.endSheet(panel) }
-        onOpen = nil
     }
 }

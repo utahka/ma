@@ -554,7 +554,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         alert.window.initialFirstResponder = field
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let comment = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "--", with: "—")
+            // コメントを途中で閉じてしまう `-->` だけを崩す（他の `--` は書いたまま残す）
+            .replacingOccurrences(of: "-->", with: "->")
         guard !comment.isEmpty else { return }
         let string = textView.string as NSString
         let location = min(textView.selectedRange().location, string.length)
