@@ -71,6 +71,33 @@ final class BoxDecoration: NSObject, @unchecked Sendable {
     }
 }
 
+/// ``` で囲んだコードブロックの1行。ブロックの全行に付け、背景を1枚の角丸としてつなげて描く
+final class CodeBlockDecoration: NSObject, @unchecked Sendable {
+    /// 背景の内側の左右の余白
+    static let padding: CGFloat = 16
+    /// カーソルがブロックの外にあるとき、隠したフェンス行の高さ（背景の内側の上下の余白になる）
+    static let fenceHeight: CGFloat = 10
+    nonisolated(unsafe) static let languageFont = NSFont.systemFont(ofSize: 11)
+
+    let isFirst: Bool
+    let isLast: Bool
+    /// 右上に控えめに描く言語名。フェンス行を見せているときは nil
+    let language: String?
+
+    init(isFirst: Bool, isLast: Bool, language: String?) {
+        self.isFirst = isFirst
+        self.isLast = isLast
+        self.language = language
+    }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? CodeBlockDecoration else { return false }
+        return isFirst == other.isFirst && isLast == other.isLast && language == other.language
+    }
+
+    override var hash: Int { isFirst.hashValue ^ isLast.hashValue ^ language.hashValue }
+}
+
 /// Obsidian のコールアウトの種類ごとの色とアイコン
 struct CalloutStyle {
     let color: NSColor
@@ -290,6 +317,9 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
             super.draw(at: point, in: context)
             drawBoxHeader(box, at: point)
             drawCheckboxes(at: point)
+        case let code as CodeBlockDecoration:
+            drawCodeBlock(code, at: point)
+            super.draw(at: point, in: context)
         case let card as EmbedCard:
             // 元の文字は透明なので、カードだけを描く
             let rect = embedCardRect().offsetBy(dx: point.x - layoutFragmentFrame.minX, dy: point.y)
@@ -379,16 +409,38 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
             rect.divided(atDistance: 3, from: .minXEdge).slice.fill()
             return
         }
-        // 先頭と末尾の段落だけ角を丸める。途中の段落は上下に伸ばした角丸を切り取って四角にする
+        fillBlockBackground(rect, color: box.color.withAlphaComponent(0.1), isFirst: box.isFirst, isLast: box.isLast)
+    }
+
+    /// 段落をまたいでつながる背景。先頭と末尾の段落だけ角を丸め、途中の段落は上下に伸ばした角丸を切り取って四角にする
+    private func fillBlockBackground(_ rect: CGRect, color: NSColor, isFirst: Bool, isLast: Bool) {
         let radius: CGFloat = 6
         var shape = rect
-        if !box.isFirst { shape.origin.y -= radius; shape.size.height += radius }
-        if !box.isLast { shape.size.height += radius }
+        if !isFirst { shape.origin.y -= radius; shape.size.height += radius }
+        if !isLast { shape.size.height += radius }
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: rect).addClip()
-        box.color.withAlphaComponent(0.1).setFill()
+        color.setFill()
         NSBezierPath(roundedRect: shape, xRadius: radius, yRadius: radius).fill()
         NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawCodeBlock(_ code: CodeBlockDecoration, at point: CGPoint) {
+        let left = textLeft(from: point)
+        let rect = CGRect(x: left, y: point.y, width: availableWidth, height: decoratedHeight)
+        fillBlockBackground(rect, color: .quaternarySystemFill, isFirst: code.isFirst, isLast: code.isLast)
+
+        guard let language = code.language, let line = textLineFragments.first else { return }
+        let label = NSAttributedString(string: language, attributes: [
+            .font: CodeBlockDecoration.languageFont, .foregroundColor: NSColor.tertiaryLabelColor,
+        ])
+        let size = label.size()
+        // 最初の行の文字と縦中央を揃え、右端の余白の内側に置く
+        let bounds = line.typographicBounds
+        let font = NSFont.monospacedSystemFont(ofSize: 13.5, weight: .regular)
+        let center = point.y + bounds.minY + line.glyphOrigin.y - (font.ascender + font.descender) / 2
+        label.draw(at: CGPoint(x: left + availableWidth - CodeBlockDecoration.padding + 4 - size.width,
+                               y: center - size.height / 2))
     }
 
     private func drawBoxHeader(_ box: BoxDecoration, at point: CGPoint) {
