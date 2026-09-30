@@ -7,6 +7,8 @@ struct MarkdownStyler {
     private let bodyFont = NSFont.systemFont(ofSize: 15)
     private let monoFont = NSFont.monospacedSystemFont(ofSize: 13.5, weight: .regular)
     private let hiddenFont = NSFont.systemFont(ofSize: 0.01)
+    /// チェックボックスの下に隠す `[ ]` のフォント
+    private let checkboxFont = NSFont(name: "Helvetica", size: 15) ?? NSFont.systemFont(ofSize: 15)
     /// 箇条書きの1段の幅（タブ1つ、または空白2つ）
     private let listIndentStep: CGFloat = 28
     private var spaceKern: CGFloat {
@@ -459,9 +461,9 @@ struct MarkdownStyler {
         } else if rule.firstMatch(in: text, range: line) != nil {
             storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: line)
         } else if let match = listMarker.firstMatch(in: text, range: line) {
-            // 箇条書きとタスクは項目どうしの間を少し空ける（通常の段落よりは詰める）
+            // 箇条書きとタスクは項目どうしの間をわずかに空ける（折り返した行の行間より 2pt 広いだけにして詰める）
             let style = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
-            style.paragraphSpacing = 5
+            style.paragraphSpacing = 2
             // 行頭の空白2つとタブ1つを同じ1段の幅にする。タブは1段ごとのタブ位置へ進み、空白は字間で半段に広げる。
             // 字間は連続する空白の先頭の1文字にまとめて付ける（空白ごとに付けると、足される幅が文字数ぶんにならない）
             style.tabStops = []
@@ -494,7 +496,11 @@ struct MarkdownStyler {
             marker(match.range(at: 1), in: storage, active: active)
             let brackets = NSRange(location: checkbox.location, length: 3)
             let checked = (text as NSString).character(at: brackets.location + 1) != 0x20
-            storage.addAttributes([.foregroundColor: NSColor.clear, .maCheckbox: checked], range: brackets)
+            // 本文のフォントのままだと `[` `]` にヒラギノが割り当てられ（日本語環境の約物の扱い）、その行だけ約 6pt 高くなる。
+            // 透明で見えない文字なので置き換えの起きないフォントにし、幅はチェックボックスに合わせる
+            let bracketWidth = "[ ]".size(withAttributes: [.font: checkboxFont]).width
+            storage.addAttributes([.foregroundColor: NSColor.clear, .maCheckbox: checked, .font: checkboxFont], range: brackets)
+            storage.addAttribute(.kern, value: 14 - bracketWidth, range: NSRange(location: NSMaxRange(brackets) - 1, length: 1))
             if checked {
                 let rest = NSRange(location: NSMaxRange(checkbox), length: NSMaxRange(line) - NSMaxRange(checkbox))
                 storage.addAttributes([
