@@ -8,6 +8,8 @@ struct SlashCommand {
         case linePrefix(String)
         /// `/…` の位置に文字を入れる。`block` なら前後の文字と別の行にする。`selection` の位置が文字数を超えるときは末尾
         case insert(text: () -> String, selection: NSRange, block: Bool, blankLineAbove: Bool = false)
+        /// 行を箇条書きにし、1段深い空の子の項目を付ける（子を持つので ▸/▾ で折りたためる）
+        case toggleList
     }
 
     let title: String
@@ -26,6 +28,7 @@ struct SlashCommand {
         SlashCommand(title: "箇条書き", hint: "-", symbol: "list.bullet", keywords: ["bullet", "list", "ul", "kajougaki"], action: .linePrefix("- ")),
         SlashCommand(title: "番号付きリスト", hint: "1.", symbol: "list.number", keywords: ["numbered", "ol", "list", "bangou"], action: .linePrefix("1. ")),
         SlashCommand(title: "チェックリスト", hint: "- [ ]", symbol: "checklist", keywords: ["todo", "task", "checkbox", "checklist"], action: .linePrefix("- [ ] ")),
+        SlashCommand(title: "トグルリスト", hint: "- ▸", symbol: "list.triangle", keywords: ["toggle", "fold", "toguru"], action: .toggleList),
         SlashCommand(title: "引用", hint: ">", symbol: "text.quote", keywords: ["quote", "blockquote", "inyou"], action: .linePrefix("> ")),
         SlashCommand(title: "コールアウト", hint: "> [!note]", symbol: "exclamationmark.bubble", keywords: ["callout", "note", "tip"],
                      action: .insert(text: { "> [!note]\n> " }, selection: NSRange(location: 12, length: 0), block: true)),
@@ -71,17 +74,13 @@ struct SlashCommand {
         let after = text.substring(with: NSRange(location: caret, length: lineEnd - caret))
 
         switch action {
+        case .toggleList:
+            let edit = Self.replacingLinePrefix(with: "- ", line: line, lineEnd: lineEnd, before: before, after: after)
+            let unit = BlockMover.indentUnit(in: text.components(separatedBy: "\n"))
+            return (edit.range, edit.replacement + "\n" + edit.indent + unit + "- ", edit.selection)
         case .linePrefix(let marker):
-            let content = before + after
-            let nsContent = content as NSString
-            let match = Self.linePrefixPattern.firstMatch(in: content, range: NSRange(location: 0, length: nsContent.length))
-            let indent = match.map { nsContent.substring(with: $0.range(at: 1)) } ?? ""
-            let prefixLength = match?.range.length ?? 0
-            let rest = nsContent.substring(from: prefixLength)
-            let caretInRest = max(0, (before as NSString).length - prefixLength)
-            let caret = line.location + (indent as NSString).length + (marker as NSString).length + caretInRest
-            return (NSRange(location: line.location, length: lineEnd - line.location), indent + marker + rest,
-                    NSRange(location: caret, length: 0))
+            let edit = Self.replacingLinePrefix(with: marker, line: line, lineEnd: lineEnd, before: before, after: after)
+            return (edit.range, edit.replacement, edit.selection)
         case .insert(let makeText, let selection, let block, let blankLineAbove):
             let inserted = makeText()
             var leading = ""
@@ -100,6 +99,21 @@ struct SlashCommand {
             return (NSRange(location: slash, length: caret - slash), leading + inserted + trailing,
                     NSRange(location: offset + min(selection.location, (inserted as NSString).length), length: selection.length))
         }
+    }
+
+    /// 行頭の記号を `marker` に差し替える。行頭のインデントは残し、カーソルは `/` を打った位置の文字の後ろに置く
+    private static func replacingLinePrefix(with marker: String, line: NSRange, lineEnd: Int, before: String, after: String)
+        -> (range: NSRange, replacement: String, selection: NSRange, indent: String) {
+        let content = before + after
+        let nsContent = content as NSString
+        let match = linePrefixPattern.firstMatch(in: content, range: NSRange(location: 0, length: nsContent.length))
+        let indent = match.map { nsContent.substring(with: $0.range(at: 1)) } ?? ""
+        let prefixLength = match?.range.length ?? 0
+        let rest = nsContent.substring(from: prefixLength)
+        let caretInRest = max(0, (before as NSString).length - prefixLength)
+        let caret = line.location + (indent as NSString).length + (marker as NSString).length + caretInRest
+        return (NSRange(location: line.location, length: lineEnd - line.location), indent + marker + rest,
+                NSRange(location: caret, length: 0), indent)
     }
 
     /// 行頭のインデントと、見出し・リスト・チェックボックス・引用の記号

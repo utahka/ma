@@ -50,17 +50,18 @@ struct BlockMover {
     }
 
     /// `line` に落とすときに選べるリストの階層（浅い順）。
-    /// 次のブロックがリスト項目ならその階層、直前で終わるリスト項目があればその階層を候補にする
-    func indentChoices(for block: MarkdownBlock, at line: Int) -> [String] {
+    /// 次のブロックがリスト項目ならその階層、直前で終わるリスト項目があればその階層を候補にする。
+    /// `isHidden` はたたんで隠した行か。隠した項目の階層と、たたんだ項目の子になる階層は選ばない
+    func indentChoices(for block: MarkdownBlock, at line: Int, isHidden: (Int) -> Bool = { _ in false }) -> [String] {
         guard block.kind == .listItem else { return [] }
         var choices: [String] = []
         if let next = self.block(startingAt: line), next.kind == .listItem { choices.append(next.indent) }
         let previousLine = (0..<line).last { !Self.isBlank(lines[$0]) }
         for item in blocks where item.kind == .listItem && item.lines.upperBound == previousLine
-            && !item.lines.overlaps(block.lines) {
+            && !item.lines.overlaps(block.lines) && !isHidden(item.lines.lowerBound) {
             choices.append(item.indent)
             // 直前の項目の子になる
-            choices.append(item.indent + Self.indentUnit(in: lines))
+            if !isHidden(item.lines.lowerBound + 1) { choices.append(item.indent + Self.indentUnit(in: lines)) }
         }
         if choices.isEmpty { choices.append("") }
         return Array(Set(choices)).sorted { $0.count < $1.count }
@@ -205,7 +206,7 @@ struct BlockMover {
     }
 
     /// 文書で使われている1段ぶんのインデント。タブがあればタブ
-    private static func indentUnit(in lines: [String]) -> String {
+    static func indentUnit(in lines: [String]) -> String {
         let indents = lines.filter { isListItem($0) }.map(leadingWhitespace).filter { !$0.isEmpty }
         if indents.isEmpty || indents.contains(where: { $0.hasPrefix("\t") }) { return "\t" }
         return String(repeating: " ", count: indents.map(\.count).min() ?? 4)
