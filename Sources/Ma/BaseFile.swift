@@ -371,3 +371,85 @@ extension BaseFile {
         return "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }
+
+// MARK: - グループ化の書き戻し
+
+extension BaseFile {
+    /// `views` の `index` 番目のビューの `groupBy` を書き換えた YAML を返す。`groupBy` が nil ならキーごと消す。
+    /// `property` は書く名前。今の `groupBy` と同じ列を指すなら、書かれたままの名前（`種別` など）を残す。
+    /// 新しく足すときは Obsidian と同じく `filters` の後ろ（なければ `name` の後ろ）に置く。
+    /// `updatingColumns` と同じく、そのキーの行だけを差し替える。形が想定と違えば nil
+    static func updatingGroupBy(_ yaml: String, view index: Int, groupBy: (property: String, ascending: Bool)?) -> String? {
+        var lines = yaml.components(separatedBy: "\n")
+        func indent(_ line: String) -> Int { line.prefix { $0 == " " }.count }
+        func isBlank(_ line: String) -> Bool { line.trimmingCharacters(in: .whitespaces).isEmpty }
+
+        guard let viewsLine = lines.firstIndex(of: "views:") else { return nil }
+        var items: [Int] = []
+        var itemIndent: Int?
+        var end = lines.count
+        for number in (viewsLine + 1)..<lines.count {
+            let line = lines[number]
+            if isBlank(line) { continue }
+            let depth = indent(line)
+            if depth == 0 { end = number; break }
+            if line.dropFirst(depth).hasPrefix("- ") {
+                if itemIndent == nil { itemIndent = depth }
+                if depth == itemIndent { items.append(number) }
+            }
+        }
+        guard let itemIndent, items.indices.contains(index) else { return nil }
+        let start = items[index]
+        var itemEnd = index + 1 < items.count ? items[index + 1] : end
+        while itemEnd > start + 1, isBlank(lines[itemEnd - 1]) { itemEnd -= 1 }
+        let keyIndent = itemIndent + 2
+        let pad = String(repeating: " ", count: keyIndent)
+
+        /// キーの行から、そのキーの値の最後の行まで。項目の先頭の行（`- type: table`）のキーは対象にしない
+        func block(_ key: String) -> Range<Int>? {
+            guard let keyLine = ((start + 1)..<itemEnd).first(where: { number in
+                indent(lines[number]) == keyIndent && lines[number].dropFirst(keyIndent).hasPrefix(key + ":")
+            }) else { return nil }
+            var last = keyLine + 1
+            while last < itemEnd, isBlank(lines[last]) || indent(lines[last]) > keyIndent
+                || (indent(lines[last]) == keyIndent && lines[last].dropFirst(keyIndent).hasPrefix("- ")) {
+                last += 1
+            }
+            while last > keyLine + 1, isBlank(lines[last - 1]) { last -= 1 }
+            return keyLine..<last
+        }
+
+        let current = block("groupBy")
+        guard let groupBy else {
+            guard let current else { return yaml }
+            lines.removeSubrange(current)
+            return lines.joined(separator: "\n")
+        }
+        var property = scalar(groupBy.property)
+        if let current {
+            let childPad = pad + "  property: "
+            for line in lines[current].dropFirst() where line.hasPrefix(childPad) {
+                let written = String(line.dropFirst(childPad.count))
+                var name = written.trimmingCharacters(in: .whitespaces)
+                if name.count >= 2, let first = name.first, first == name.last, first == "\"" || first == "'" {
+                    name = String(name.dropFirst().dropLast())
+                }
+                if BaseExpression.propertyID(name) == BaseExpression.propertyID(groupBy.property) { property = written }
+            }
+        }
+        let replacement = [
+            pad + "groupBy:",
+            pad + "  property: " + property,
+            pad + "  direction: " + (groupBy.ascending ? "ASC" : "DESC"),
+        ]
+        if let current {
+            lines.replaceSubrange(current, with: replacement)
+        } else {
+            let first = lines[start].dropFirst(itemIndent + 2)
+            let position = block("filters")?.upperBound ?? block("name")?.upperBound
+                ?? (first.hasPrefix("name:") ? start + 1 : itemEnd)
+            lines.insert(contentsOf: replacement, at: position)
+        }
+        return lines.joined(separator: "\n")
+    }
+}
