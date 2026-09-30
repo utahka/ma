@@ -1,50 +1,32 @@
 # Ma
 
-ローカルの Markdown フォルダを開いて書くための、macOS 専用の小さなエディタ。
-Obsidian のように、ファイルは素の Markdown のまま、見た目だけをライブプレビューで整える。
+English | [日本語](README.ja.md)
 
-## 現在できること
+## About
 
-- フォルダを開き（⌘O）、フォルダと `.md` をツリー表示する（隠しフォルダは除外）
-- ノートの編集と自動保存（入力が 0.5 秒止まったら保存。⌘S で即時保存）
-- ライブプレビュー: 見出し・太字・斜体・取り消し線・インラインコード・コードブロック・引用・リスト・`[[wikilink]]`・リンク。カーソルのない行では記法の記号を隠す
-- 表: 罫線付きの表として表示し、そのままセルを編集できる（列の揃え `:---:` に対応）。Tab / Shift+Tab でセルを移動、Enter で下の行へ（最終行では行を追加）、Shift+Enter でセル内に `<br>` を入れる。カーソルのない行では `<br>` の位置で改行し、列幅に収まらない文字は折り返して表示する（カーソルのある行は1行に並べ、`<br>` を `↵` で表示）
-- ⌘E: ソース表示（装飾なし・等幅）とプレビュー表示を切り替える
-- 箇条書きの `-` は中黒で表示する
-- 表の列幅: 列の境界をドラッグして変えられる（ドラッグ中も表示が追従する）。幅は区切り行（`|---|`）のセルの文字数として保存するので、ファイルは素の Markdown のまま。区切りがすべて `---` の表は中身に合わせた自動幅
-- 表の行の追加: 表にマウスを載せると下端に「＋」が出て、押すと空の行を足す
-- タスク（`- [ ]`）: チェックボックスとして描き、クリックでチェックを切り替える
-- Obsidian のコールアウト（`> [!note]` など）: 種類ごとの色とアイコンで枠を描く。`[!note]-` はカーソルが外にあるあいだ本文をたたむ
-- カレンダー（Obsidian の Calendar プラグイン相当）: サイドバーの下に月のカレンダーを出す。デイリーノートのある日に点を打ち、日付を押すとその日のノートを開く。ない日は押すとテンプレートから作る。⌘D で今日のノートを開く。置き場所・日付書式・テンプレートは `.obsidian/daily-notes.json`、週の始まりは Calendar プラグインの設定から読む。Templater の `<% %>` は実行できないので取り除く
-- ブロックの移動: 段落・見出し・リスト項目（子の項目ごと）・引用とコールアウト・表・コードブロックにマウスを載せると左に「⋮⋮」が出て、ドラッグで順番を入れ替えられる。リスト項目は落とす位置の横方向で階層を選べる。ファイル上は行を入れ替えるだけで、⌘Z で元に戻せる
-- リンク: `[[ノート名]]` をクリックするとそのノートを開く（vault 全体からファイル名で探し、なければ vault の直下に作る）。`[表示名](URL)` は既定のブラウザで開く。⌘クリックすると新しいタブで開く
-- `open -a Ma ノート.md` でファイルを直接開く
+Ma (間, "the space between") is a small Markdown editor for macOS.
 
-## ビルド
+- **Minimal and Obsidian-compatible.** Open a folder of plain `.md` files, such as an Obsidian vault, and edit it with live preview. Files stay plain Markdown, and Ma reads Obsidian settings like daily notes and bookmarks.
+- **An editor that stands between AI and humans.** Notes written by AI agents and notes written by you live in the same plain files. Ma is the place where you read, fix, and rearrange them by hand.
+- **macOS only, tuned for one person.** Ma is built with Swift and AppKit and is optimized for the author's own workflow.
 
-Xcode は不要。Command Line Tools だけでビルドできる。
+## Installation
+
+There are no prebuilt binaries yet. Build from source.
+
+Requirements:
+
+- macOS 15 or later
+- Swift 6 (Xcode or the Command Line Tools)
 
 ```sh
-make run      # デバッグビルドして起動
-make app      # build/Ma.app を作る
-make install  # /Applications にコピー
+git clone https://github.com/utahka/ma.git
+cd ma
+make install  # builds build/Ma.app and copies it to /Applications
 ```
 
-## 構成
+To try it without installing, run `make run`.
 
-| ファイル | 役割 |
-|---|---|
-| `main.swift` | 起動処理・メニュー・ウィンドウ |
-| `Vault.swift` | フォルダの走査、ノートの読み込みと保存 |
-| `SidebarViewController.swift` | ファイルツリー（NSOutlineView）とカレンダー |
-| `CalendarView.swift` | 月のカレンダーの描画とクリック |
-| `BlockMover.swift` | 本文を行単位でブロックに分け、ブロックを別の位置へ動かした本文を作る（前後の空行も整える） |
-| `BlockDragging.swift` | ブロックのつまみの表示とドラッグ、落とし先の線 |
-| `DailyNotes.swift` | デイリーノートの設定の読み込み、日付とファイル名の対応、テンプレートの展開 |
-| `EditorViewController.swift` | エディタ（TextKit 2 の NSTextView） |
-| `MarkdownStyler.swift` | 文字属性によるライブプレビュー。表・コールアウトの範囲を判定し、段落に装飾を付ける |
-| `BlockLayoutFragment.swift` | TextKit 2 のレイアウトフラグメント。表の罫線とセル、コールアウトの背景とアイコンを描く |
+## License
 
-## ライセンス
-
-MIT
+[MIT](LICENSE)
