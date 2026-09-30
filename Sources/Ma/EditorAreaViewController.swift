@@ -8,6 +8,8 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     var onOpenNote: ((URL, _ newTab: Bool) -> Void)?
     /// `.base` の表でプロパティの値を変えたとき
     var onSetProperty: ((URL, String, PropertyValue, PropertyType) -> Void)?
+    /// `.base` の表でプロパティ名を変えたとき（対象のノート、古い名前、新しい名前）
+    var onRenameProperty: (([URL], String, String) -> Void)?
     var propertyTypes: () -> PropertyTypes? = { nil }
     var loadNotes: () async -> [NoteRecord] = { [] }
     var propertySchemas: (_ url: URL, _ text: String) -> [String: PropertySchema] = { _, _ in [:] }
@@ -146,6 +148,12 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         return true
     }
 
+    /// タブで開いているノートなら、そのエディタでプロパティ名を変える。開いていなければ nil、書き換えなかったら false
+    func renameProperty(in url: URL, from key: String, to newKey: String) -> Bool? {
+        guard let editor = editors.first(where: { $0.url?.path == url.path }) else { return nil }
+        return editor.renameProperty(key, to: newKey)
+    }
+
     /// vault のファイルが変わったとき。開いている `.base` の表と、ノートのプロパティ欄の型を作り直す
     func notesDidChange() {
         for base in bases { base.reload() }
@@ -197,6 +205,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         base.propertyTypes = { [weak self] in self?.propertyTypes()?.recorded ?? [:] }
         base.onOpenNote = { [weak self] url, newTab in self?.onOpenNote?(url, newTab) }
         base.onSetProperty = { [weak self] url, key, value, type in self?.onSetProperty?(url, key, value, type) }
+        base.onRenameProperty = { [weak self] urls, key, newKey in self?.onRenameProperty?(urls, key, newKey) }
         return base
     }
 

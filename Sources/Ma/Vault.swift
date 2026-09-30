@@ -463,6 +463,23 @@ final class Vault {
         }
     }
 
+    /// ファイルのプロパティ名を変える。キーの行の名前だけを差し替え、値や行の位置は変えない。
+    /// 新しい名前のキーがすでにあれば上書きせず false を返す
+    @discardableResult
+    func renameProperty(in url: URL, from key: String, to newKey: String) -> Bool {
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let frontmatter = Frontmatter.parse(text), frontmatter.entry(newKey) == nil,
+                  let edit = frontmatter.renaming(key, to: newKey, in: text) else { return false }
+            let updated = (text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            NSLog("プロパティ名の変更に失敗: \(url.path): \(error)")
+            return false
+        }
+    }
+
     /// 読み込んだ `.base`。更新日時が変わるまで使い回す
     private var baseCache: [String: (modified: Date, base: BaseFile?)] = [:]
 

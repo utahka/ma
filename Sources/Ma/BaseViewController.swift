@@ -8,6 +8,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     var onOpenNote: ((URL, _ newTab: Bool) -> Void)?
     /// セルで値を変えたとき。ノートへの書き込みは呼び出し側が受け持つ
     var onSetProperty: ((URL, String, PropertyValue, PropertyType) -> Void)?
+    /// プロパティ名を変えたとき（書き換えるノート、古い名前、新しい名前）。ノートへの書き込みは呼び出し側が受け持つ
+    var onRenameProperty: (([URL], String, String) -> Void)?
 
     private enum Row {
         case group(BaseValue, property: String, count: Int)
@@ -29,6 +31,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     /// 列を作り直しているあいだは、幅や順番の変化を保存しない
     private var isSettingColumns = false
     private var saveColumnsTask: Task<Void, Never>?
+    /// 出しているシートの NSAlert（名前の変更の入力と確認）
+    private var presentedAlert: NSAlert?
 
     private let viewPicker = NSSegmentedControl()
     /// グループ化するプロパティと向きを選ぶボタン（Notion のビューの上の控えめなボタンにならう）
@@ -392,12 +396,110 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         add("列を隠す", symbol: "eye.slash", enabled: tableView.tableColumns.count > 1) { [weak self] in
             self?.hideColumn(property)
         }
+        // ファイルの属性（file.*）や式（formula.*）はノートのプロパティではないので名前を変えられない
+        add("名前を変更…", symbol: "pencil", enabled: Self.noteKey(property) != nil) { [weak self] in
+            self?.renameProperty(property)
+        }
         menu.addItem(.separator())
         // ファイルの属性（file.*）などノートのプロパティでない列は消せない
         add("プロパティを削除…", symbol: "trash", enabled: Self.noteKey(property) != nil) { [weak self] in
             self?.deleteProperty(property)
         }
         return menu
+    }
+
+    // MARK: - プロパティ名の変更
+
+    /// 新しい名前を聞き、対象ノートのフロントマターのキーと、この `.base` の中の参照を書き換える
+    private func renameProperty(_ property: String) {
+        guard let url, let base, let old = Self.noteKey(property), let window = view.window else { return }
+        let prompt = NSAlert()
+        prompt.messageText = "プロパティ名を変更"
+        prompt.informativeText = "「\(old)」の新しい名前を入力してください。"
+        prompt.addButton(withTitle: "次へ")
+        prompt.addButton(withTitle: "キャンセル")
+        let field = NSTextField(string: old)
+        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        prompt.accessoryView = field
+        prompt.window.initialFirstResponder = field
+        present(prompt, in: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            let new = field.stringValue.trimmingCharacters(in: .whitespaces)
+            guard new != old else { return }
+            // シートを閉じ終えてから次のシートを出す
+            DispatchQueue.main.async { self?.confirmRename(from: old, to: new, url: url, base: base) }
+        }
+    }
+
+    /// シートで出す。NSAlert は自分で持っていないと、出したまま解放されてシートが勝手に閉じる
+    private func present(_ alert: NSAlert, in window: NSWindow, completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        presentedAlert = alert
+        alert.beginSheetModal(for: window) { [weak self] response in
+            if self?.presentedAlert === alert { self?.presentedAlert = nil }
+            completion(response)
+        }
+    }
+
+    private func confirmRename(from old: String, to new: String, url: URL, base: BaseFile) {
+        guard let window = view.window else { return }
+        func fail(_ message: String) {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "「\(old)」の名前を変更できません"
+            alert.informativeText = message
+            present(alert, in: window) { _ in }
+        }
+        let text: String, updated: String
+        do {
+            text = try String(contentsOf: url, encoding: .utf8)
+            updated = try BaseFile.renamingProperty(text, from: old, to: new)
+        } catch {
+            return fail("\(error)")
+        }
+        let types = propertyTypes()
+        let targets = notes.filter { $0.properties[old] != nil && base.contains($0, types: types) }
+        // 新しい名前のキーがすでにあるノートは、値を上書きしないように書き換えない
+        let conflicts = targets.filter { $0.properties[new] != nil }
+        let writes = targets.filter { $0.properties[new] == nil }
+        var lines = [writes.isEmpty
+            ? "書き換えるノートはありません。"
+            : "\(writes.count) 件のノートのフロントマターを書き換えます。値はそのままです。"]
+        if !conflicts.isEmpty {
+            let names = conflicts.prefix(5).map { "・" + $0.basename }.joined(separator: "\n")
+            lines.append("次の \(conflicts.count) 件はすでに「\(new)」があるため、上書きせずにそのまま残します。\n" + names
+                + (conflicts.count > 5 ? "\n…" : ""))
+        }
+        if updated != text { lines.append("この .base の列・並べ替え・グループ・フィルタの参照も新しい名前にします。") }
+        let alert = NSAlert()
+        alert.messageText = "プロパティ名を「\(old)」から「\(new)」に変更しますか？"
+        alert.informativeText = lines.joined(separator: "\n\n")
+        alert.addButton(withTitle: "変更")
+        alert.addButton(withTitle: "キャンセル")
+        present(alert, in: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.performRename(from: old, to: new, url: url, text: text, updated: updated, notes: writes.map(\.url))
+        }
+    }
+
+    private func performRename(from old: String, to new: String, url: URL, text: String, updated: String, notes targets: [URL]) {
+        // 列の幅の保存を待っていたら先に書く（あとから古い名前で書き戻さないように）
+        if saveColumnsTask != nil {
+            saveColumnsTask?.cancel()
+            saveColumnsTask = nil
+            saveColumns()
+        }
+        do {
+            // 確認のあいだに .base が変わっていたら、今の中身で書き換え直す
+            let current = try String(contentsOf: url, encoding: .utf8)
+            let result = current == text ? updated : try BaseFile.renamingProperty(current, from: old, to: new)
+            if result != current { try result.write(to: url, atomically: true, encoding: .utf8) }
+            base = try BaseFile(yaml: result)
+        } catch {
+            NSLog("プロパティ名の変更で .base を保存できません: \(url.path): \(error)")
+            return showMessage(".base を保存できません: \(error)")
+        }
+        onRenameProperty?(targets, old, new)
+        reload()
     }
 
     // MARK: - グループ化の設定
