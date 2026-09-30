@@ -54,6 +54,14 @@ final class EditorTextView: NSTextView {
     /// 本文の幅が変わったとき。表の列幅（収まらないときの縮小）を計算し直すのに使う
     var onTextWidthChange: (() -> Void)?
 
+    /// 列幅のドラッグ中に幅が変わったとき。セルの文字を新しい列の位置へ送り直すのに使う
+    var onColumnDrag: (() -> Void)?
+
+    /// ドラッグ中の表の区切り行の位置と列幅。区切り行を書き換えるのは離したときだけなので、それまでは装飾にこの幅を渡す
+    var draggedWidths: (separator: Int, widths: [CGFloat])? {
+        columnDrag.map { ($0.layout.separatorRange.location, $0.layout.columnWidths) }
+    }
+
     var textWidth: CGFloat {
         (textContainer?.size.width ?? 0) - (textContainer?.lineFragmentPadding ?? 5) * 2
     }
@@ -128,8 +136,10 @@ final class EditorTextView: NSTextView {
         guard let drag = columnDrag else { return super.mouseDragged(with: event) }
         NSCursor.resizeLeftRight.set()
         let x = convert(event.locationInWindow, from: nil).x
-        drag.layout.columnWidths[drag.column] = TableLayout.snapped(drag.startWidth + (x - drag.startX) / drag.scale)
-        redraw(drag.layout.tableRange)
+        let width = max(drag.layout.minimumWidth(of: drag.column), TableLayout.snapped(drag.startWidth + (x - drag.startX) / drag.scale))
+        guard width != drag.layout.columnWidths[drag.column] else { return }
+        drag.layout.columnWidths[drag.column] = width
+        onColumnDrag?()
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -320,6 +330,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
         textView.onTextWidthChange = { [weak self] in self?.restyle(force: true) }
+        textView.onColumnDrag = { [weak self] in self?.restyle(force: true) }
 
         let scrollView = NSScrollView()
         // タブバーの下に置くので、タイトルバーの分の余白は要らない
@@ -383,7 +394,21 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         )
         guard force || lines != activeLines else { return }
         activeLines = lines
-        tables = styler.apply(to: storage, activeRange: lines, availableWidth: textView.textWidth, sourceMode: sourceMode)
+        // 文書全体に属性をかけ直すと、TextKit 2 がすべての段落のレイアウトを捨てて高さを見積もり直す。
+        // スクロール位置に見える中身がずれたり白くなったりするので、写しに装飾してから変わった段落だけ書き戻す
+        let styled = NSTextStorage(attributedString: storage)
+        tables = styler.apply(to: styled, activeRange: lines, availableWidth: textView.textWidth, sourceMode: sourceMode,
+                              draggedWidths: textView.draggedWidths)
+        let string = storage.string as NSString
+        storage.beginEditing()
+        var position = 0
+        while position < length {
+            let paragraph = string.paragraphRange(for: NSRange(location: position, length: 0))
+            position = NSMaxRange(paragraph)
+            guard !storage.attributedSubstring(from: paragraph).isEqual(to: styled.attributedSubstring(from: paragraph)) else { continue }
+            styled.enumerateAttributes(in: paragraph) { attributes, range, _ in storage.setAttributes(attributes, range: range) }
+        }
+        storage.endEditing()
         textView.typingAttributes = styler.baseAttributes
     }
 

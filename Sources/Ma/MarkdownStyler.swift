@@ -41,8 +41,12 @@ struct MarkdownStyler {
 
     /// 装飾をかけ直し、文書中の表を返す。`availableWidth` は本文の幅で、表が収まらないときの縮小に使う。
     /// `sourceMode` では装飾を外し、等幅フォントで Markdown をそのまま見せる
+    /// `draggedWidths` は列幅をドラッグ中の表の幅。区切り行の位置で表を特定し、区切り行から読んだ幅の代わりに使う
     @discardableResult
-    func apply(to storage: NSTextStorage, activeRange: NSRange, availableWidth: CGFloat, sourceMode: Bool) -> [TableLayout] {
+    func apply(
+        to storage: NSTextStorage, activeRange: NSRange, availableWidth: CGFloat, sourceMode: Bool,
+        draggedWidths: (separator: Int, widths: [CGFloat])? = nil
+    ) -> [TableLayout] {
         let text = storage.string
         let string = text as NSString
         storage.beginEditing()
@@ -83,7 +87,8 @@ struct MarkdownStyler {
             }
             if let end = tableEnd(from: index, in: lines, text: text) {
                 let block = Array(lines[index..<end])
-                tables.append(styleTable(block, text: text, in: storage, availableWidth: availableWidth, isActive: isActive))
+                tables.append(styleTable(block, text: text, in: storage, availableWidth: availableWidth,
+                                         draggedWidths: draggedWidths, isActive: isActive))
                 index = end
                 continue
             }
@@ -119,7 +124,8 @@ struct MarkdownStyler {
     /// 字間（kern）を足して各セルの文字を列の位置まで送る。罫線と見出しの背景はレイアウトフラグメントが描く。
     /// 文字を描き直さないので、カーソルを入れても表の形のまま通常のテキストとして編集できる
     private func styleTable(
-        _ block: [Line], text: String, in storage: NSTextStorage, availableWidth: CGFloat, isActive: (NSRange) -> Bool
+        _ block: [Line], text: String, in storage: NSTextStorage, availableWidth: CGFloat,
+        draggedWidths: (separator: Int, widths: [CGFloat])?, isActive: (NSRange) -> Bool
     ) -> TableLayout {
         let string = text as NSString
         let padding = TableRowDecoration.cellPadding
@@ -166,7 +172,7 @@ struct MarkdownStyler {
 
         // 2. 列幅。区切り行に `-` が 4 本以上ある列があれば幅の指定ありとみなし、なければ中身に合わせる
         let measured = textRanges.map { row in
-            row.map { $0.length > 0 ? ceil(storage.attributedSubstring(from: $0).size().width) : 0 }
+            row.map { $0.length > 0 ? laidOutWidth($0, in: storage) : 0 }
         }
         var widths = [CGFloat](repeating: 48, count: columnCount)
         if separatorCells.contains(where: { $0.filter { $0 == "-" }.count > 3 }) {
@@ -182,6 +188,9 @@ struct MarkdownStyler {
                 }
             }
         }
+        if let draggedWidths, draggedWidths.separator == block[1].content.location, draggedWidths.widths.count == columnCount {
+            widths = draggedWidths.widths
+        }
         let layout = TableLayout(
             columnWidths: widths, alignments: alignments, separatorRange: block[1].content,
             rows: rows.map { $0.cells }, tableRange: block.first!.full.union(block.last!.full)
@@ -195,6 +204,7 @@ struct MarkdownStyler {
         for (rowIndex, row) in rows.enumerated() {
             var kerns: [Int: CGFloat] = [:]
             var indent: CGFloat = 0
+            var carried: CGFloat = 0
             let lineStart = row.line.content.location
             for column in 0..<min(columnCount, row.cells.count) {
                 let cell = row.cells[column]
@@ -206,11 +216,10 @@ struct MarkdownStyler {
                 case .right: left = max(0, drawn[column] - padding - width)
                 default: left = padding
                 }
-                let right = max(0, drawn[column] - left - width)
-                // 左の余白はセルの文字の直前の文字（隠した縦棒か空白）に、右の余白はセルの最後の文字に足す
-                if content.location > lineStart { kerns[content.location - 1, default: 0] += left } else { indent += left }
-                let last = cell.length > 0 ? NSMaxRange(cell) - 1 : content.location - 1
-                if last >= lineStart { kerns[last, default: 0] += right }
+                // 余白はセルの文字の直前の文字（隠した縦棒か空白）の字間に足す。前の列の右の余白もここに持ち越す。
+                // 「）」「」」などの全角の閉じ約物の直後の文字では字間が効かないので、セルの最後の文字の後ろには付けない
+                if content.location > lineStart { kerns[content.location - 1, default: 0] += carried + left } else { indent += carried + left }
+                carried = max(0, drawn[column] - left - width)
             }
             // カーソルのない行で、<br> や列幅に収まらない文字があるセルがあれば、フラグメントが改行・折り返して描く。
             // カーソルのある行は、元の文字を1行に並べたまま編集させる
@@ -263,6 +272,15 @@ struct MarkdownStyler {
         return layout
     }
 
+    /// 並べたときの文字の幅。「。」などの全角の約物は、行末では詰めて測られるが、表では後ろに隠した文字が続くので詰まらない。
+    /// 後ろの1文字（幅ゼロのフォントで隠した縦棒か空白）も含めて測る
+    private func laidOutWidth(_ range: NSRange, in storage: NSTextStorage) -> CGFloat {
+        let string = storage.string as NSString
+        var measured = range
+        if NSMaxRange(range) < string.length, string.character(at: NSMaxRange(range)) != 0x0A { measured.length += 1 }
+        return ceil(storage.attributedSubstring(from: measured).size().width)
+    }
+
     /// セルの文字を <br> で区切ったときの、最も長い行の幅
     private func widestLine(_ range: NSRange, in storage: NSTextStorage, text: String) -> CGFloat {
         var widest: CGFloat = 0
@@ -270,7 +288,7 @@ struct MarkdownStyler {
         for match in lineBreakTag.matches(in: text, range: range) + [nil] {
             let end = match?.range.location ?? NSMaxRange(range)
             if end > start {
-                widest = max(widest, ceil(storage.attributedSubstring(from: NSRange(location: start, length: end - start)).size().width))
+                widest = max(widest, laidOutWidth(NSRange(location: start, length: end - start), in: storage))
             }
             if let match { start = NSMaxRange(match.range) }
         }
