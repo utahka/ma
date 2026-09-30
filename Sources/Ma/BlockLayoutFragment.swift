@@ -13,6 +13,8 @@ extension NSAttributedString.Key {
     static let maURL = NSAttributedString.Key("ma.url")
     /// AI へのコメントを付けた文字に付ける。値はコメント本文。カーソル行（記号が見えている状態）では付けない
     static let maAIComment = NSAttributedString.Key("ma.aiComment")
+    /// 表の編集中のセルで、<br> の「>」に付ける。表示のうえだけ行区切り（U+2028）に置き換えてセルの中で改行する
+    static let maLineBreak = NSAttributedString.Key("ma.lineBreak")
 }
 
 /// チェックボックスの状態。rawValue は `[ ]` の中の文字
@@ -262,17 +264,21 @@ final class TableRowDecoration: NSObject, @unchecked Sendable {
     let isLast: Bool
     /// セル内の改行や折り返しがある行で、フラグメントが描くセルの文字。nil なら元の文字をそのまま見せている
     let cellTexts: [NSAttributedString]?
+    /// カーソルのあるセルの列。この列だけは元の文字を列の中に並べて見せている（`cellTexts` の中身は空）
+    let liveColumn: Int?
 
-    init(kind: Kind, layout: TableLayout, isLast: Bool, cellTexts: [NSAttributedString]? = nil) {
+    init(kind: Kind, layout: TableLayout, isLast: Bool, cellTexts: [NSAttributedString]? = nil, liveColumn: Int? = nil) {
         self.kind = kind
         self.layout = layout
         self.cellTexts = cellTexts
         self.isLast = isLast
+        self.liveColumn = liveColumn
     }
 
     override func isEqual(_ object: Any?) -> Bool {
         guard let other = object as? TableRowDecoration else { return false }
         return kind == other.kind && isLast == other.isLast && layout == other.layout && cellTexts == other.cellTexts
+            && liveColumn == other.liveColumn
     }
 
     override var hash: Int { layout.hash }
@@ -322,8 +328,12 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
 
     override var renderingSurfaceBounds: CGRect {
         guard decoration != nil else { return super.renderingSurfaceBounds }
-        let full = CGRect(x: -layoutFragmentFrame.minX, y: 0,
+        var full = CGRect(x: -layoutFragmentFrame.minX, y: 0,
                           width: padding * 2 + availableWidth, height: layoutFragmentFrame.height)
+        // 最上位の項目の ▸ は本文の左端より外に出る
+        if let fold = decoration as? ListFoldDecoration, let rect = listToggleRect(indentLength: fold.indentLength) {
+            full = full.union(rect)
+        }
         return super.renderingSurfaceBounds.union(full)
     }
 
@@ -345,6 +355,12 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
             // 元の文字は透明なので、カードだけを描く
             let rect = embedCardRect().offsetBy(dx: point.x - layoutFragmentFrame.minX, dy: point.y)
             MainActor.assumeIsolated { card.draw(in: rect) }
+        case let fold as ListFoldDecoration:
+            super.draw(at: point, in: context)
+            drawCheckboxes(at: point)
+            if let rect = listToggleRect(indentLength: fold.indentLength) {
+                ListToggle.drawTriangle(collapsed: true, in: rect.offsetBy(dx: point.x, dy: point.y))
+            }
         case let row as TableRowDecoration:
             // 罫線と背景を先に描き、セルの文字（元の Markdown の文字）はその上に通常どおり描く
             drawTableRow(row, at: point)
@@ -396,6 +412,16 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
             }
         }
         return result
+    }
+
+    /// トグルの ▸/▾ の位置（フラグメント内の座標）。最初の行の記号の手前に、文字の縦中央をそろえて置く
+    func listToggleRect(indentLength: Int) -> CGRect? {
+        guard let line = textLineFragments.first else { return nil }
+        let bounds = line.typographicBounds
+        let x = bounds.minX + line.locationForCharacter(at: min(indentLength, line.characterRange.length)).x
+        let centerY = bounds.minY + line.glyphOrigin.y - NSFont.systemFont(ofSize: 15).capHeight / 2
+        let size = ListToggle.buttonSize
+        return CGRect(x: x - size - 2, y: centerY - size / 2, width: size, height: size)
     }
 
     private func drawCheckboxes(at point: CGPoint) {
@@ -584,5 +610,23 @@ final class BlockLayoutDelegate: NSObject, NSTextLayoutManagerDelegate {
             fragment.decoration = paragraph.attributedString.attribute(.maBlock, at: 0, effectiveRange: nil) as? NSObject
         }
         return fragment
+    }
+}
+
+/// 表の編集中のセルの <br> を、表示のうえだけ行区切りにする。文字数は変えないので、文書の位置との対応はそのまま
+final class TableLineBreakDelegate: NSObject, NSTextContentStorageDelegate {
+    func textContentStorage(_ textContentStorage: NSTextContentStorage, textParagraphWith range: NSRange) -> NSTextParagraph? {
+        guard let storage = textContentStorage.textStorage, NSMaxRange(range) <= storage.length else { return nil }
+        var breaks: [NSRange] = []
+        storage.enumerateAttribute(.maLineBreak, in: range) { value, found, _ in
+            if value != nil { breaks.append(NSRange(location: found.location - range.location, length: found.length)) }
+        }
+        guard !breaks.isEmpty else { return nil }
+        let paragraph = NSMutableAttributedString(attributedString: storage.attributedSubstring(from: range))
+        // 置き換えた文字は元の文字の属性を引き継ぐ
+        for found in breaks {
+            paragraph.replaceCharacters(in: found, with: String(repeating: "\u{2028}", count: found.length))
+        }
+        return NSTextParagraph(attributedString: paragraph)
     }
 }

@@ -103,7 +103,9 @@ final class BlockDragController {
               let position = handlePosition(for: block)
         else { return hideHandle() }
         hoveredBlock = block
-        handle.frame = NSRect(x: position.x - 22, y: position.y - 11, width: 18, height: 22)
+        // トグルの最初の行は記号の左に ▸/▾ があるので、つまみをその左に出す
+        let toggleWidth = textView.isListToggle(startingAt: lineStarts[block.lines.lowerBound]) ? ListToggle.buttonSize + 2 : 0
+        handle.frame = NSRect(x: position.x - 22 - toggleWidth, y: position.y - 11, width: 18, height: 22)
         handle.isHidden = false
     }
 
@@ -152,6 +154,8 @@ final class BlockDragController {
         for line in mover.dropLines {
             let range = drag.block.lines
             if range.contains(line) && line != range.lowerBound { continue }
+            // たたんで隠した行の間には落とさない（落としたブロックが見えなくなる）
+            if line < lineStarts.count, textView.isFolded(lineStarts[line]) { continue }
             guard let y = gapY(before: line) else { continue }
             if best == nil || abs(y - point.y) < abs(best!.y - point.y) { best = (line, y) }
         }
@@ -160,7 +164,9 @@ final class BlockDragController {
         let left = textLeft
         var x = left
         var indent: String?
-        let choices = mover.indentChoices(for: drag.block, at: best.line)
+        let choices = mover.indentChoices(for: drag.block, at: best.line) { line in
+            line < lineStarts.count && textView.isFolded(lineStarts[line])
+        }
         if !choices.isEmpty {
             let target = point.x + drag.grabOffset
             let (base, step) = listMetrics()
