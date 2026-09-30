@@ -36,6 +36,8 @@ struct BaseFile {
     struct Sort {
         let property: String
         let ascending: Bool
+        /// `.base` に書かれたままの名前（`ステータス` など）。書き戻すときに元の書き方を残す
+        var rawProperty: String?
     }
 
     struct View {
@@ -114,7 +116,7 @@ struct BaseFile {
     private static func sort(_ item: [String: Any]) -> Sort? {
         guard let property = item["property"] else { return nil }
         let direction = (item["direction"] as? String ?? "ASC").uppercased()
-        return Sort(property: BaseExpression.propertyID("\(property)"), ascending: direction != "DESC")
+        return Sort(property: BaseExpression.propertyID("\(property)"), ascending: direction != "DESC", rawProperty: "\(property)")
     }
 
     private static func filter(_ node: Any) throws -> Filter {
@@ -363,7 +365,7 @@ extension BaseFile {
     }
 
     /// 引用符なしでは読み違える名前だけ囲む
-    private static func scalar(_ text: String) -> String {
+    static func scalar(_ text: String) -> String {
         let special = text.contains(": ") || text.contains(" #") || text.hasSuffix(":")
             || text.first.map { "-?:,[]{}#&*!|>'\"%@`".contains($0) } == true
             || text != text.trimmingCharacters(in: .whitespaces)

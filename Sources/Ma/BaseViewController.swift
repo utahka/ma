@@ -33,6 +33,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     private let viewPicker = NSSegmentedControl()
     /// グループ化するプロパティと向きを選ぶボタン（Notion のビューの上の控えめなボタンにならう）
     private let groupButton = NSButton(title: "", target: nil, action: nil)
+    private let sortEditor = BaseSortEditor()
     private let countLabel = NSTextField(labelWithString: "")
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let tableView = BaseTableView()
@@ -84,7 +85,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         scrollView.backgroundColor = .textBackgroundColor
 
         let container = NSView()
-        for view in [viewPicker, groupButton, countLabel, messageLabel, scrollView] {
+        sortEditor.onChange = { [weak self] sort in self?.saveSort(sort) }
+        for view in [viewPicker, groupButton, countLabel, messageLabel, scrollView, sortEditor.button] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -95,6 +97,9 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             groupButton.leadingAnchor.constraint(equalTo: viewPicker.trailingAnchor, constant: 12),
             countLabel.centerYAnchor.constraint(equalTo: viewPicker.centerYAnchor),
             countLabel.leadingAnchor.constraint(equalTo: groupButton.trailingAnchor, constant: 12),
+            sortEditor.button.centerYAnchor.constraint(equalTo: viewPicker.centerYAnchor),
+            // 右端はタブ全体の☆ボタンが重なるので、その左に置く
+            sortEditor.button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -56),
             messageLabel.topAnchor.constraint(equalTo: viewPicker.bottomAnchor, constant: 16),
             messageLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             messageLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
@@ -204,6 +209,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             default: break
             }
         }
+        sortEditor.update(sort: view.sort, candidates: sortCandidates(view, base: base))
         let total = groups.reduce(0) { $0 + $1.notes.count }
         countLabel.stringValue = "\(total) 件"
         // 列を足すと表は今の行数のままセルを作ろうとするので、列を作り直すあいだは行を空にしておく
@@ -370,6 +376,38 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             NSLog("グループ化の保存に失敗: \(url.path): \(error)")
         }
         rebuild()
+    }
+
+    // MARK: - ソートの保存
+
+    /// 並べ替えに選べるプロパティ。表の列を先に、ビューに出ているノートのほかのプロパティとファイルの属性を後ろに並べる
+    private func sortCandidates(_ view: BaseFile.View, base: BaseFile) -> [BaseSortEditor.Candidate] {
+        var seen = Set<String>()
+        var ids: [String] = []
+        func add(_ id: String) { if seen.insert(id).inserted { ids.append(id) } }
+        view.order.forEach(add)
+        view.sort.map(\.property).forEach(add)
+        let others = Set(base.schemas.keys).union(base.displayNames.keys.filter { $0.hasPrefix("note.") })
+            .union(groups.flatMap(\.notes).flatMap { $0.properties.keys.map { "note." + $0 } })
+        others.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.forEach(add)
+        ["file.name", "file.ctime", "file.mtime", "file.size", "file.path"].forEach(add)
+        return ids.map { BaseSortEditor.Candidate(property: $0, title: base.displayName(of: $0)) }
+    }
+
+    /// 並べ替えの条件を `.base` のそのビューの `sort` に書き、表を並べ直す
+    private func saveSort(_ sort: [BaseFile.Sort]) {
+        guard let url, base?.views.indices.contains(selectedView) == true else { return }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let updated = BaseFile.updatingSort(text, view: selectedView, sort: sort) else {
+                return NSLog("並べ替えを保存できません（.base の形が想定と違います）: \(url.path)")
+            }
+            if updated != text { try updated.write(to: url, atomically: true, encoding: .utf8) }
+            base = try BaseFile(yaml: updated)
+            rebuild()
+        } catch {
+            NSLog("並べ替えの保存に失敗: \(url.path): \(error)")
+        }
     }
 
     // MARK: - 表
