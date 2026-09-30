@@ -166,10 +166,11 @@ final class EditorTextView: NSTextView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if let (range, checked) = checkbox(at: point) {
-            // カーソルを動かさずにチェックを切り替える
-            replace(NSRange(location: range.location + 1, length: 1), with: checked ? " " : "x",
-                    actionName: checked ? "チェックを外す" : "チェック")
+        if let (range, state) = checkbox(at: point) {
+            // カーソルを動かさずにチェックを切り替える。進行中の `[-]` は完了にする
+            let done = state == .done
+            replace(NSRange(location: range.location + 1, length: 1), with: done ? " " : "x",
+                    actionName: done ? "チェックを外す" : "チェック")
             return
         }
         if let link = link(at: point) {
@@ -276,7 +277,7 @@ final class EditorTextView: NSTextView {
     }
 
     /// マウス位置にチェックボックスがあれば、`[ ]` の文書内の範囲とチェック状態を返す
-    private func checkbox(at point: NSPoint) -> (range: NSRange, checked: Bool)? {
+    private func checkbox(at point: NSPoint) -> (range: NSRange, state: CheckboxState)? {
         let location = containerPoint(point)
         guard let fragment = fragment(at: location),
               let content = textLayoutManager?.textContentManager
@@ -284,7 +285,7 @@ final class EditorTextView: NSTextView {
         let local = CGPoint(x: location.x - fragment.layoutFragmentFrame.minX, y: location.y - fragment.layoutFragmentFrame.minY)
         guard let hit = fragment.checkboxes().first(where: { $0.rect.insetBy(dx: -3, dy: -3).contains(local) }) else { return nil }
         let paragraphStart = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
-        return (NSRange(location: paragraphStart + hit.range.location, length: hit.range.length), hit.checked)
+        return (NSRange(location: paragraphStart + hit.range.location, length: hit.range.length), hit.state)
     }
 
     /// マウス位置が折りたためるコールアウトの開閉の印の上なら、見出し行の先頭の位置を返す。
