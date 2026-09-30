@@ -122,6 +122,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         searchField.delegate = self
         // 既定では入力の途中でも action が送られる。開くのは Return と行のクリックだけにする
         searchField.sendsWholeSearchString = true
+        // 既定の regular では細く窮屈に見える。高さの制約だけだと文字が上に寄るので、large で縦幅を広げる
+        searchField.controlSize = .large
 
         emptyBookmarksLabel.textColor = .secondaryLabelColor
         emptyBookmarksLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
