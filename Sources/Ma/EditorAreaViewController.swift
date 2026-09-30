@@ -92,7 +92,8 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         pathLabel.isHidden = path == nil
         guard let path else { return }
         let name = (path as NSString).lastPathComponent
-        let folder = String(path.dropLast(name.count))
+        // 区切りの両脇を空けて読みやすくする（`Tasks / Tickets / ノート名`）
+        let folder = String(path.dropLast(name.count)).split(separator: "/").map { $0 + " / " }.joined()
         let font = pathLabel.font ?? .systemFont(ofSize: 12)
         let text = NSMutableAttributedString(string: folder, attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor])
         text.append(NSAttributedString(string: (name as NSString).deletingPathExtension,
