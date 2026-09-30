@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let vault = Vault()
     private let sidebar = SidebarViewController()
     private let editor = EditorAreaViewController()
@@ -51,6 +51,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sidebar.reload(vault.tree)
             sidebar.select(vault.activeTab.url)
         }
+        sidebar.onOpenBookmark = { [unowned self] bookmark, newTab in openBookmark(bookmark, newTab: newTab) }
+        sidebar.onToggleBookmark = { [vault] url in vault.toggleBookmark(url) }
+        sidebar.onRemoveBookmark = { [vault] indexPath in vault.removeBookmark(at: indexPath) }
+        sidebar.isBookmarked = { [vault] url in vault.isBookmarked(url) }
+        vault.onBookmarksChange = { [unowned self] in sidebar.reload(bookmarks: vault.bookmarks) }
         sidebar.calendarView.onSelectDate = { [vault] date in vault.openDailyNote(for: date) }
         vault.onNotesChange = { [unowned self] in
             let calendar = sidebar.calendarView
@@ -71,6 +76,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if vault.root == nil { vault.restoreLastRoot() }
         window.makeKeyAndOrderFront(nil)
+        keepTrafficLightsPlaced()
+        // Obsidian で変えたブックマークを反映する
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) {
+            [vault] _ in MainActor.assumeIsolated { vault.reloadBookmarks() }
+        }
 
         // `swift run` で起動したとき（.app の外）も通常のアプリとして前面に出す。
         // .app は LaunchServices が前面に出すので、ここで activate するとバックグラウンド起動（open -g）でも前面に出てしまう
@@ -90,6 +100,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             vault.open(url)
         }
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// 信号機ボタンを `TrafficLights` の位置に置く。AppKit はタイトルの変更やサイドバーの開閉のたびに
+    /// タイトルバーを並べ直して元の位置に戻すので、ボタンの位置が変わったら置き直す
+    private func keepTrafficLightsPlaced() {
+        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            guard let button = window.standardWindowButton(type) else { continue }
+            button.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(trafficLightFrameDidChange(_:)), name: NSView.frameDidChangeNotification, object: button
+            )
+        }
+        placeTrafficLights()
+    }
+
+    /// AppKit が3つのボタンを順に並べ直している途中で呼ばれるので、並べ終わってから置き直す
+    /// （その場で動かすと、後から並べられる緑のボタンが元の位置に戻った）
+    @objc private func trafficLightFrameDidChange(_ notification: Notification) {
+        DispatchQueue.main.async { [self] in placeTrafficLights() }
+    }
+
+    /// フルスクリーンではメニューバーと一緒に出るので動かさない
+    private func placeTrafficLights() {
+        guard !window.styleMask.contains(.fullScreen) else { return }
+        for (index, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+            guard let button = window.standardWindowButton(type), let superview = button.superview else { continue }
+            let top = TrafficLights.centerY - button.frame.height / 2
+            let origin = NSPoint(
+                x: TrafficLights.leading + CGFloat(index) * TrafficLights.spacing,
+                y: superview.isFlipped ? top : superview.bounds.height - top - button.frame.height
+            )
+            if button.frame.origin != origin { button.setFrameOrigin(origin) }
+        }
+        // サイドバーを閉じているとき、タブは緑のボタンの右から並ぶので描き直す
+        editor.tabBar.needsDisplay = true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -117,6 +162,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// Ma で開けないファイル（`.base` など）は Obsidian で開く。Obsidian がなければ既定のアプリに任せる
+    private func openBookmark(_ bookmark: Bookmark, newTab: Bool) {
+        guard let url = bookmark.url else { return }
+        switch bookmark.kind {
+        case .file:
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            if url.pathExtension.lowercased() == "md" {
+                vault.open(url, newTab: newTab)
+            } else if let obsidian = Self.obsidianURL(for: url), NSWorkspace.shared.urlForApplication(toOpen: obsidian) != nil {
+                NSWorkspace.shared.open(obsidian)
+            } else {
+                NSWorkspace.shared.open(url)
+            }
+        case .folder:
+            sidebar.reveal(folder: url)
+        case .url:
+            NSWorkspace.shared.open(url)
+        case .group, .other:
+            break
+        }
+    }
+
+    private static func obsidianURL(for file: URL) -> URL? {
+        var components = URLComponents()
+        components.scheme = "obsidian"
+        components.host = "open"
+        components.queryItems = [URLQueryItem(name: "path", value: file.path)]
+        return components.url
+    }
+
+    @objc func toggleBookmark(_ sender: Any?) {
+        guard let url = vault.activeTab.url else { return }
+        vault.toggleBookmark(url)
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(toggleBookmark(_:)) else { return true }
+        guard let url = vault.activeTab.url else {
+            menuItem.title = "ブックマークに追加"
+            return false
+        }
+        menuItem.title = vault.isBookmarked(url) ? "ブックマークから外す" : "ブックマークに追加"
+        return true
     }
 
     @objc func openFolder(_ sender: Any?) { vault.chooseFolder() }
@@ -155,6 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         file.addItem(withTitle: "フォルダを開く…", action: #selector(openFolder(_:)), keyEquivalent: "o")
         file.addItem(withTitle: "保存", action: #selector(save(_:)), keyEquivalent: "s")
         file.addItem(withTitle: "今日のデイリーノート", action: #selector(openTodayNote(_:)), keyEquivalent: "d")
+        file.addItem(withTitle: "ブックマークに追加", action: #selector(toggleBookmark(_:)), keyEquivalent: "B")
         file.addItem(.separator())
         file.addItem(withTitle: "タブを閉じる", action: #selector(closeTab(_:)), keyEquivalent: "w")
         file.addItem(withTitle: "ウインドウを閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "W")
@@ -202,6 +293,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         return main
     }
+}
+
+/// 信号機ボタンの位置。サイドバーのボタンやタブの文字と縦を揃え、窓の左上の角から離す
+enum TrafficLights {
+    /// ボタンの中心の、ウィンドウの上端からの高さ
+    static let centerY: CGFloat = 20
+    /// 閉じるボタンの左端（macOS の既定は 9）
+    static let leading: CGFloat = 14
+    /// ボタンどうしの左端の間隔（macOS の既定と同じ）
+    static let spacing: CGFloat = 20
+    /// 緑のボタンの右端
+    static let trailing: CGFloat = leading + spacing * 2 + 14
 }
 
 private extension NSMenu {
