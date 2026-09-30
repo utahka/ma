@@ -265,12 +265,17 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         switch item {
         case let node as FileNode:
             cell.textField?.stringValue = node.name
-            symbol = node.isDirectory ? "folder" : "doc.text"
+            symbol = node.isDirectory ? "folder" : node.isBase ? "tablecells" : "doc.text"
         case let node as BookmarkNode:
             let bookmark = node.bookmark
             cell.textField?.stringValue = bookmark.displayName
             switch bookmark.kind {
-            case .file: symbol = bookmark.url?.pathExtension.lowercased() == "md" ? "doc.text" : "doc"
+            case .file:
+                switch bookmark.url?.pathExtension.lowercased() {
+                case "md": symbol = "doc.text"
+                case "base": symbol = "tablecells"
+                default: symbol = "doc"
+                }
             case .folder: symbol = "folder"
             case .url: symbol = "link"
             case .group: symbol = "bookmark"

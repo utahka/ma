@@ -43,6 +43,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         sidebar.onSelect = { [vault] url, newTab in vault.open(url, newTab: newTab) }
         editor.onChange = { [vault] url, text in vault.textDidChange(text, url: url) }
         editor.onOpenLink = { [unowned self] target, newTab in openLink(target, newTab: newTab) }
+        editor.propertyTypes = { [vault] in vault.propertyTypes }
+        editor.loadNotes = { [vault] in await vault.noteRecords() }
+        editor.propertySchemas = { [vault] url, text in vault.propertySchemas(for: url, text: text) }
+        editor.onOpenNote = { [vault] url, newTab in vault.open(url, newTab: newTab) }
+        editor.onSetProperty = { [vault, editor] url, key, value, type in
+            // 開いているノートはエディタで書き換え（取り消せる）、開いていなければファイルを書き換える
+            if !editor.setProperty(in: url, key, to: value, type: type) {
+                vault.setProperty(in: url, key, to: value, type: type)
+            }
+            vault.saveNow()
+        }
         editor.tabBar.onSelect = { [vault] index in vault.selectTab(at: index) }
         editor.tabBar.onClose = { [vault] index in vault.closeTab(at: index) }
         editor.tabBar.onMove = { [vault] source, destination in vault.moveTab(from: source, to: destination) }
@@ -53,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         vault.onTreeChange = { [unowned self] in
             sidebar.reload(vault.tree)
             sidebar.select(vault.activeTab.url)
+            editor.notesDidChange()
         }
         sidebar.onOpenBookmark = { [unowned self] bookmark, newTab in openBookmark(bookmark, newTab: newTab) }
         sidebar.onToggleBookmark = { [vault] url in vault.toggleBookmark(url) }
@@ -275,6 +287,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         edit.addItem(withTitle: "コピー", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "ペースト", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "すべてを選択", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "プロパティを追加", action: #selector(EditorAreaViewController.addProperty(_:)), keyEquivalent: ";")
         edit.addItem(.separator())
         let find = edit.addItem(withTitle: "検索…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
         find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)

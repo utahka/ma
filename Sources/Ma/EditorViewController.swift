@@ -25,6 +25,7 @@ final class EditorTextView: NSTextView {
     private let addRowButton = NSButton()
     private var hoveredTable: TableLayout?
     private lazy var blockDrag = BlockDragController(textView: self)
+    let propertiesView = PropertiesView()
 
     // init を上書きすると init(usingTextLayoutManager:) が継承されなくなるので、配置された時点で準備する
     override func viewDidMoveToSuperview() {
@@ -41,6 +42,16 @@ final class EditorTextView: NSTextView {
         addSubview(addRowButton)
         addSubview(blockDrag.handle)
         addSubview(blockDrag.indicator)
+        propertiesView.isHidden = true
+        addSubview(propertiesView)
+    }
+
+    /// プロパティ欄を、隠したフロントマターの最初の行（文書の先頭）に重ねる
+    func placeProperties(height: CGFloat?) {
+        guard let height else { propertiesView.isHidden = true; return }
+        let padding = textContainer?.lineFragmentPadding ?? 5
+        propertiesView.frame = NSRect(x: textContainerOrigin.x + padding, y: textContainerOrigin.y, width: textWidth, height: height)
+        propertiesView.isHidden = false
     }
 
     // ノートを切り替えたときも、ブロックの読み直しが要る
@@ -294,6 +305,10 @@ final class EditorTextView: NSTextView {
 /// 1つのタブの中身。タブごとに作るので、取り消し履歴・カーソル・スクロール位置はタブごとに残る
 final class EditorViewController: NSViewController, NSTextViewDelegate {
     var onChange: ((URL, String) -> Void)?
+    /// vault のプロパティの型（`.obsidian/types.json`）
+    var propertyTypes: () -> PropertyTypes? = { nil }
+    /// ノートが対象の `.base` に書かれた `ma:` の型
+    var propertySchemas: (_ url: URL, _ text: String) -> [String: PropertySchema] = { _, _ in [:] }
     private(set) var url: URL?
     var onOpenLink: ((LinkTarget, _ newTab: Bool) -> Void)? {
         get { textView.onOpenLink }
@@ -307,6 +322,15 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     private var activeLines = NSRange(location: NSNotFound, length: 0)
     /// 直近の装飾で見つかった表。表の中での Tab や Enter の移動先を求めるのに使う
     private var tables: [TableLayout] = []
+    /// 直近の装飾で読んだフロントマター。ソース表示のときは nil
+    private var frontmatter: Frontmatter?
+    /// `schemas` を求めたときのプロパティ。プロパティが変わると対象の `.base` も変わりうるので求め直す
+    private var schemaEntries: [FrontmatterEntry]?
+    private var schemas: [String: PropertySchema] = [:]
+    /// プロパティ欄からの書き換えのあいだだけ、フロントマターの編集を許す
+    private var editingProperties = false
+    /// 最後に保存へ回した本文。取り消し・やり直しで変わったかどうかの判定に使う
+    private var reportedText = ""
 
     /// ソース表示（装飾なし）かどうか。切り替えと記録は EditorAreaViewController が受け持つ
     var sourceMode = false {
@@ -331,6 +355,12 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.textContainer?.widthTracksTextView = true
         textView.onTextWidthChange = { [weak self] in self?.restyle(force: true) }
         textView.onColumnDrag = { [weak self] in self?.restyle(force: true) }
+        setUpProperties()
+        // 取り消し・やり直しでは textDidChange が呼ばれないことがあるので、ここでも保存と装飾をやり直す。
+        // 取り消し履歴はウインドウで共有しているので、ほかのタブの取り消しでも呼ばれる（本文が変わったときだけ扱う）
+        for name in [NSNotification.Name.NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange] {
+            NotificationCenter.default.addObserver(self, selector: #selector(textDidChangeByUndo), name: name, object: nil)
+        }
 
         let scrollView = NSScrollView()
         // タブバーの下に置くので、タイトルバーの分の余白は要らない
@@ -361,6 +391,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         placeholder.isHidden = document != nil
         textView.isEditable = document != nil
         textView.string = document?.text ?? ""
+        reportedText = textView.string
+        schemaEntries = nil
         textView.undoManager?.removeAllActions()
         let length = (textView.string as NSString).length
         if let state = document?.viewState {
@@ -423,8 +455,14 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         // 日本語の変換中（未確定文字あり）は保存も装飾もしない。確定時にもう一度呼ばれる
         guard !textView.hasMarkedText() else { return }
+        reportedText = textView.string
         if let url { onChange?(url, textView.string) }
         restyle(force: true)
+    }
+
+    @objc private func textDidChangeByUndo() {
+        guard url != nil, textView.string != reportedText else { return }
+        textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
@@ -442,11 +480,22 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         )
         guard force || lines != activeLines else { return }
         activeLines = lines
+        frontmatter = sourceMode ? nil : Frontmatter.parse(storage.string)
+        let properties = textView.propertiesView
+        if let frontmatter {
+            if let url, schemaEntries.map({ $0.map(\.key) != frontmatter.entries.map(\.key) || $0.map(\.value) != frontmatter.entries.map(\.value) }) ?? true {
+                schemas = propertySchemas(url, storage.string)
+                schemaEntries = frontmatter.entries
+            }
+            properties.update(entries: frontmatter.entries, types: propertyTypes(), schemas: schemas)
+        }
+        let height = frontmatter.map { _ in properties.height }
         // 文書全体に属性をかけ直すと、TextKit 2 がすべての段落のレイアウトを捨てて高さを見積もり直す。
         // スクロール位置に見える中身がずれたり白くなったりするので、写しに装飾してから変わった段落だけ書き戻す
         let styled = NSTextStorage(attributedString: storage)
         tables = styler.apply(to: styled, activeRange: lines, availableWidth: textView.textWidth, sourceMode: sourceMode,
-                              draggedWidths: textView.draggedWidths)
+                              draggedWidths: textView.draggedWidths,
+                              frontmatter: frontmatter.flatMap { fm in height.map { (fm.range, $0) } })
         let string = storage.string as NSString
         storage.beginEditing()
         var position = 0
@@ -458,6 +507,105 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         }
         storage.endEditing()
         textView.typingAttributes = styler.baseAttributes
+        textView.placeProperties(height: height)
+    }
+
+    // MARK: - プロパティ
+
+    private func setUpProperties() {
+        let properties = textView.propertiesView
+        properties.onSet = { [weak self] key, value, type in
+            self?.editFrontmatter("プロパティの変更") { $0.setting(key, to: value, type: type) }
+        }
+        properties.onAdd = { [weak self] key in
+            guard let self else { return }
+            let type = propertyTypes()?.type(of: key) ?? .text
+            editFrontmatter("プロパティの追加") { $0.setting(key, to: type.isList ? .list([]) : .scalar(""), type: type) }
+        }
+        properties.onCancelAdd = { [weak self] in
+            // プロパティを足すために作った空のフロントマターは消す
+            guard let self, let frontmatter, frontmatter.entries.isEmpty,
+                  (textView.string as NSString).substring(with: frontmatter.range) == Frontmatter.emptyBlock
+            else { return }
+            editFrontmatter("プロパティの追加") { Frontmatter.Edit(range: $0.range, replacement: "") }
+        }
+        properties.onRemove = { [weak self] key in
+            self?.editFrontmatter("プロパティの削除") { $0.removing(key) }
+        }
+        properties.onRename = { [weak self] key, newKey in
+            guard let self else { return }
+            if let types = propertyTypes(), let entry = frontmatter?.entry(key) {
+                types.set(types.type(of: key, value: entry.value), for: newKey)
+            }
+            let text = textView.string
+            editFrontmatter("プロパティ名の変更") { $0.renaming(key, to: newKey, in: text) }
+        }
+        properties.onChangeType = { [weak self] key, type in
+            guard let self, let entry = frontmatter?.entry(key) else { return }
+            propertyTypes()?.set(type, for: key)
+            // リストと1つの値のあいだで変えたときは、値の形も合わせる
+            let value: PropertyValue
+            switch (entry.value, type.isList) {
+            case (.scalar(let text), true): value = .list(text.isEmpty ? [] : [text])
+            case (.list(let items), false): value = .scalar(items.joined(separator: ", "))
+            default: value = entry.value
+            }
+            if value == entry.value {
+                restyle(force: true)
+            } else {
+                editFrontmatter("プロパティの型の変更") { $0.setting(key, to: value, type: type) }
+            }
+        }
+        properties.onHeightChange = { [weak self] in self?.restyle(force: true) }
+    }
+
+    /// `.base` が増えたり変わったりしたとき（起動直後のツリーの読み込みも含む）に、型を求め直す
+    func refreshSchemas() {
+        schemaEntries = nil
+        restyle(force: true)
+    }
+
+    /// `.base` の表から値を変えたとき。エディタの編集として書き換えるので ⌘Z で戻せる
+    func setProperty(_ key: String, to value: PropertyValue, type: PropertyType) {
+        if Frontmatter.parse(textView.string) == nil {
+            editingProperties = true
+            textView.replace(NSRange(location: 0, length: 0), with: Frontmatter.emptyBlock, actionName: "プロパティの変更")
+            editingProperties = false
+        }
+        editFrontmatter("プロパティの変更") { $0.setting(key, to: value, type: type) }
+    }
+
+    /// ⌘; でプロパティを足す。フロントマターがなければ先頭に作る
+    func addProperty() {
+        guard url != nil else { return }
+        if sourceMode {
+            NSSound.beep()
+            return
+        }
+        if Frontmatter.parse(textView.string) == nil {
+            editingProperties = true
+            textView.replace(NSRange(location: 0, length: 0), with: Frontmatter.emptyBlock, actionName: "プロパティの追加")
+            editingProperties = false
+        }
+        textView.propertiesView.beginAdding()
+    }
+
+    private func editFrontmatter(_ actionName: String, _ makeEdit: (Frontmatter) -> Frontmatter.Edit?) {
+        guard let frontmatter = Frontmatter.parse(textView.string), let edit = makeEdit(frontmatter) else { return }
+        editingProperties = true
+        textView.replace(edit.range, with: edit.replacement, actionName: actionName)
+        editingProperties = false
+    }
+
+    /// 隠したフロントマターを本文の編集で壊さないよう、一部だけにかかる書き換えは止める（全体を消すのは許す）
+    func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+        // 取り消し・やり直しも止めない（止めると文字は戻るのに textDidChange が呼ばれず、保存されない）
+        let undoManager = textView.undoManager
+        guard !editingProperties, undoManager?.isUndoing != true, undoManager?.isRedoing != true,
+              let frontmatter else { return true }
+        let overlap = NSIntersectionRange(range, frontmatter.range)
+        let touches = overlap.length > 0 || (range.length == 0 && range.location < NSMaxRange(frontmatter.range))
+        return !touches || NSEqualRanges(overlap, frontmatter.range)
     }
 
     // MARK: - 表の中のキー操作
@@ -505,6 +653,10 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     func textView(
         _ textView: NSTextView, willChangeSelectionFromCharacterRange old: NSRange, toCharacterRange new: NSRange
     ) -> NSRange {
+        // カーソルは隠したフロントマターに入れず、本文の先頭に置く
+        if let frontmatter, new.length == 0, new.location < NSMaxRange(frontmatter.range) {
+            return NSRange(location: NSMaxRange(frontmatter.range), length: 0)
+        }
         guard !sourceMode, new.length == 0,
               let table = tables.first(where: {
                   $0.separatorRange.location <= new.location && new.location <= NSMaxRange($0.separatorRange)

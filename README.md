@@ -6,7 +6,7 @@ English | [日本語](README.ja.md)
 
 Ma (間, "the space between") is a small Markdown editor for macOS.
 
-- **Minimal and Obsidian-compatible.** Open a folder of plain `.md` files, such as an Obsidian vault, and edit it with live preview. Files stay plain Markdown, and Ma reads Obsidian settings like daily notes and bookmarks.
+- **Minimal and Obsidian-compatible.** Open a folder of plain `.md` files, such as an Obsidian vault, and edit it with live preview. Files stay plain Markdown, and Ma reads Obsidian settings like daily notes and bookmarks, and shows Bases (`.base`) as editable tables.
 - **An editor that stands between AI and humans.** Notes written by AI agents and notes written by you live in the same plain files. Ma is the place where you read, fix, and rearrange them by hand.
 - **macOS only, tuned for one person.** Ma is built with Swift and AppKit and is optimized for the author's own workflow.
 
