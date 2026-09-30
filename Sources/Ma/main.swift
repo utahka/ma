@@ -187,13 +187,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
-    /// Ma で開けないファイル（`.base` など）は Obsidian で開く。Obsidian がなければ既定のアプリに任せる
+    /// Ma で開けないファイル（画像や PDF など）は Obsidian で開く。Obsidian がなければ既定のアプリに任せる
     private func openBookmark(_ bookmark: Bookmark, newTab: Bool) {
         guard let url = bookmark.url else { return }
         switch bookmark.kind {
         case .file:
             guard FileManager.default.fileExists(atPath: url.path) else { return }
-            if url.pathExtension.lowercased() == "md" {
+            if ["md", "base"].contains(url.pathExtension.lowercased()) {
                 vault.open(url, newTab: newTab)
             } else if let obsidian = Self.obsidianURL(for: url), NSWorkspace.shared.urlForApplication(toOpen: obsidian) != nil {
                 NSWorkspace.shared.open(obsidian)
