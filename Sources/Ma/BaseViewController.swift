@@ -35,6 +35,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     private let groupButton = NSButton(title: "", target: nil, action: nil)
     private let sortEditor = BaseSortEditor()
     private let countLabel = NSTextField(labelWithString: "")
+    private let filterButton = NSButton()
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let tableView = BaseTableView()
     private lazy var headerView = tableView.headerView
@@ -57,6 +58,14 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         countLabel.font = .systemFont(ofSize: 12)
         messageLabel.textColor = .secondaryLabelColor
         messageLabel.isHidden = true
+        filterButton.title = "フィルタ"
+        filterButton.image = NSImage(systemSymbolName: "line.3.horizontal.decrease", accessibilityDescription: nil)
+        filterButton.imagePosition = .imageLeading
+        filterButton.isBordered = false
+        filterButton.font = .systemFont(ofSize: 12)
+        filterButton.contentTintColor = .secondaryLabelColor
+        filterButton.target = self
+        filterButton.action = #selector(showFilter(_:))
 
         tableView.style = .plain
         tableView.usesAlternatingRowBackgroundColors = false
@@ -86,7 +95,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
 
         let container = NSView()
         sortEditor.onChange = { [weak self] sort in self?.saveSort(sort) }
-        for view in [viewPicker, groupButton, countLabel, messageLabel, scrollView, sortEditor.button] {
+        for view in [viewPicker, groupButton, countLabel, messageLabel, scrollView, sortEditor.button, filterButton] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -100,6 +109,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             sortEditor.button.centerYAnchor.constraint(equalTo: viewPicker.centerYAnchor),
             // 右端はタブ全体の☆ボタンが重なるので、その左に置く
             sortEditor.button.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -56),
+            filterButton.centerYAnchor.constraint(equalTo: viewPicker.centerYAnchor),
+            filterButton.trailingAnchor.constraint(equalTo: sortEditor.button.leadingAnchor, constant: -12),
             messageLabel.topAnchor.constraint(equalTo: viewPicker.bottomAnchor, constant: 16),
             messageLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             messageLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
@@ -407,6 +418,46 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             rebuild()
         } catch {
             NSLog("並べ替えの保存に失敗: \(url.path): \(error)")
+        }
+    }
+
+    // MARK: - フィルタの設定
+
+    @objc private func showFilter(_ sender: NSButton) {
+        guard let url, let base, base.views.indices.contains(selectedView) else { return }
+        let filter: BaseFilterNode?
+        do {
+            filter = try BaseFilterNode.viewFilter(in: String(contentsOf: url, encoding: .utf8), view: selectedView)
+        } catch {
+            return showMessage("フィルタを読めません: \(error)")
+        }
+        let (notes, types) = (notes, propertyTypes())
+        let editor = BaseFilterEditor(
+            filter: filter,
+            properties: BaseFilterEditor.properties(base: base, view: base.views[selectedView], notes: notes, types: types),
+            values: { BaseFilterEditor.values(of: $0, base: base, notes: notes, types: types) }
+        )
+        let view = selectedView
+        editor.onChange = { [weak self] filter in self?.saveFilter(filter, view: view) }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = editor
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+    }
+
+    /// そのビューの `filters:` の行だけを書き換えて、表を作り直す
+    private func saveFilter(_ filter: BaseFilterNode?, view: Int) {
+        guard let url else { return }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let updated = BaseFile.updatingFilter(text, view: view, filter: filter) else {
+                return NSLog("フィルタを保存できません（.base の形が想定と違います）: \(url.path)")
+            }
+            if updated != text { try updated.write(to: url, atomically: true, encoding: .utf8) }
+            base = try BaseFile(yaml: updated)
+            rebuild()
+        } catch {
+            showMessage("フィルタを保存できません: \(error)")
         }
     }
 
