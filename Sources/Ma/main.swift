@@ -47,6 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         editor.tabBar.onClose = { [vault] index in vault.closeTab(at: index) }
         editor.tabBar.onMove = { [vault] source, destination in vault.moveTab(from: source, to: destination) }
         editor.tabBar.onNewTab = { [vault] in vault.newTab() }
+        editor.tabBar.onBack = { [vault] in vault.goBack() }
+        editor.tabBar.onForward = { [vault] in vault.goForward() }
+        vault.viewState = { [unowned self] tab in editor.viewState(of: tab) }
         vault.onTreeChange = { [unowned self] in
             sidebar.reload(vault.tree)
             sidebar.select(vault.activeTab.url)
@@ -64,7 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         vault.onLoad = { [unowned self] tab, document in editor.show(document, in: tab) }
         vault.onTabsChange = { [unowned self] in
-            editor.update(tabs: vault.tabs, activeIndex: vault.activeIndex)
+            editor.update(tabs: vault.tabs, activeIndex: vault.activeIndex,
+                          canGoBack: vault.canGoBack, canGoForward: vault.canGoForward)
             let url = vault.activeTab.url
             sidebar.select(url)
             sidebar.calendarView.selectedDate = url.flatMap { vault.dailyNotes?.date(of: $0) }
@@ -77,6 +81,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if vault.root == nil { vault.restoreLastRoot() }
         window.makeKeyAndOrderFront(nil)
         keepTrafficLightsPlaced()
+        // マウスの戻る・進むボタン
+        NSEvent.addLocalMonitorForEvents(matching: .otherMouseUp) { [vault] event in
+            let button = event.buttonNumber
+            guard button == 3 || button == 4 else { return event }
+            MainActor.assumeIsolated { button == 3 ? vault.goBack() : vault.goForward() }
+            return nil
+        }
         // Obsidian で変えたブックマークを反映する
         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) {
             [vault] _ in MainActor.assumeIsolated { vault.reloadBookmarks() }
@@ -199,7 +210,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         vault.toggleBookmark(url)
     }
 
+    @objc func goBack(_ sender: Any?) { vault.goBack() }
+    @objc func goForward(_ sender: Any?) { vault.goForward() }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(goBack(_:)) { return vault.canGoBack }
+        if menuItem.action == #selector(goForward(_:)) { return vault.canGoForward }
         guard menuItem.action == #selector(toggleBookmark(_:)) else { return true }
         guard let url = vault.activeTab.url else {
             menuItem.title = "ブックマークに追加"
@@ -268,6 +284,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         view.addItem(withTitle: "ソース表示", action: #selector(EditorAreaViewController.toggleSourceMode(_:)), keyEquivalent: "e")
         let toggle = view.addItem(withTitle: "サイドバーを切り替え", action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "s")
         toggle.keyEquivalentModifierMask = [.command, .control]
+        view.addItem(.separator())
+        view.addItem(withTitle: "戻る", action: #selector(goBack(_:)), keyEquivalent: "[")
+        view.addItem(withTitle: "進む", action: #selector(goForward(_:)), keyEquivalent: "]")
         main.addItem(submenu: view, title: "表示")
 
         let windowMenu = NSMenu(title: "ウインドウ")

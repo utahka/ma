@@ -37,10 +37,16 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         editor(for: tab).show(document)
     }
 
+    func viewState(of tab: Tab.ID) -> NoteViewState? {
+        editors[tab]?.viewState
+    }
+
     /// タブの並びと選択に合わせて、タブバーと表示するエディタを揃える。閉じたタブのエディタは捨てる
-    func update(tabs: [Tab], activeIndex: Int) {
+    func update(tabs: [Tab], activeIndex: Int, canGoBack: Bool, canGoForward: Bool) {
         tabBar.titles = tabs.map(\.title)
         tabBar.selectedIndex = activeIndex
+        tabBar.canGoBack = canGoBack
+        tabBar.canGoForward = canGoForward
         let ids = Set(tabs.map(\.id))
         for (id, editor) in editors where !ids.contains(id) {
             editor.view.removeFromSuperview()

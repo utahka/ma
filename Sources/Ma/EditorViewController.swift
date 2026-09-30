@@ -362,10 +362,58 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.isEditable = document != nil
         textView.string = document?.text ?? ""
         textView.undoManager?.removeAllActions()
-        textView.setSelectedRange(NSRange(location: 0, length: 0))
-        restyle(force: true)
-        textView.scrollToBeginningOfDocument(nil)
+        let length = (textView.string as NSString).length
+        if let state = document?.viewState {
+            let location = min(state.selection.location, length)
+            textView.setSelectedRange(NSRange(location: location, length: min(state.selection.length, length - location)))
+            restyle(force: true)
+            // 差し替えた直後はテキストビューの高さが前のノートのままなので、高さが決まってから動かす
+            textView.scrollToBeginningOfDocument(nil)
+            let url = url
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.url == url else { return }
+                scroll(toCharacter: min(state.topCharacter, length))
+            }
+        } else {
+            textView.setSelectedRange(NSRange(location: 0, length: 0))
+            restyle(force: true)
+            textView.scrollToBeginningOfDocument(nil)
+        }
         focus()
+    }
+
+    /// 戻る・進むで戻ってきたときに復元するための、カーソルと画面の上端の位置
+    var viewState: NoteViewState? {
+        guard url != nil else { return nil }
+        return NoteViewState(selection: textView.selectedRange(), topCharacter: topVisibleCharacter())
+    }
+
+    /// 画面の上端にある行の先頭の文字の位置
+    private func topVisibleCharacter() -> Int {
+        guard let layoutManager = textView.textLayoutManager, let content = layoutManager.textContentManager else { return 0 }
+        let y = textView.visibleRect.minY - textView.textContainerOrigin.y
+        guard y > 0, let fragment = layoutManager.textLayoutFragment(for: CGPoint(x: 0, y: y)) else { return 0 }
+        let start = fragment.rangeInElement.location
+        let line = fragment.textLineFragments.first { fragment.layoutFragmentFrame.minY + $0.typographicBounds.maxY > y }
+        let location = line.flatMap { content.location(start, offsetBy: $0.characterRange.location) } ?? start
+        return content.offset(from: content.documentRange.location, to: location)
+    }
+
+    /// その文字の行が画面の上端に来るようにスクロールする。TextKit 2 は画面外の高さを見積もりで持つので、手前までレイアウトしてから位置を求める
+    private func scroll(toCharacter index: Int) {
+        guard let layoutManager = textView.textLayoutManager, let content = layoutManager.textContentManager,
+              let location = content.location(content.documentRange.location, offsetBy: index),
+              let range = NSTextRange(location: content.documentRange.location, end: location)
+        else { return }
+        layoutManager.ensureLayout(for: range)
+        var top: CGFloat?
+        layoutManager.enumerateTextSegments(in: NSTextRange(location: location), type: .standard, options: []) { _, frame, _, _ in
+            top = frame.minY
+            return false
+        }
+        guard let top else { return textView.scrollToBeginningOfDocument(nil) }
+        // 最初の行なら上端の余白も見せる
+        textView.scroll(NSPoint(x: 0, y: top <= 0 ? 0 : top + textView.textContainerOrigin.y))
     }
 
     func focus() {
