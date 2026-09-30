@@ -281,6 +281,77 @@ final class EditorTextView: NSTextView {
         textStorage.endEditing()
     }
 
+    // MARK: - 入力カーソル
+
+    /// macOS 14 からの入力カーソル。NSTextView は行の高さいっぱいに置くので、
+    /// 最小行高で広げた行（コールアウト・表・チェックリスト）では文字より長く、上下にはみ出す。
+    /// drawInsertionPoint(in:color:turnedOn:) は呼ばれないので、置かれた枠を文字のフォントの高さに縮め直す
+    private var insertionIndicator: NSTextInsertionIndicator?
+    /// 直近に縮め直した枠。自分で動かしたときの通知を見分けるのに使う
+    private var fittedIndicatorFrame: NSRect?
+
+    override func didAddSubview(_ subview: NSView) {
+        super.didAddSubview(subview)
+        guard let indicator = subview as? NSTextInsertionIndicator, indicator !== insertionIndicator else { return }
+        if let insertionIndicator {
+            NotificationCenter.default.removeObserver(self, name: NSView.frameDidChangeNotification, object: insertionIndicator)
+        }
+        insertionIndicator = indicator
+        indicator.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(insertionIndicatorFrameDidChange),
+                                               name: NSView.frameDidChangeNotification, object: indicator)
+        fitInsertionIndicator()
+    }
+
+    @objc private func insertionIndicatorFrameDidChange(_ notification: Notification) {
+        fitInsertionIndicator()
+    }
+
+    private func fitInsertionIndicator() {
+        guard let indicator = insertionIndicator, indicator.frame != fittedIndicatorFrame,
+              let fitted = fittedInsertionRect(for: indicator.frame), fitted != indicator.frame
+        else { return }
+        fittedIndicatorFrame = fitted
+        indicator.frame = fitted
+    }
+
+    /// 行の高さいっぱいのカーソルの枠 `rect` を、その位置の文字のフォントの ascender〜descender に縮める。
+    /// 文字は直前の文字（入力した文字が引き継ぐ属性）を優先し、記号を隠した位置（0.01pt のフォント）では同じ行の近くの見える文字を使う
+    private func fittedInsertionRect(for rect: NSRect) -> NSRect? {
+        let selection = selectedRange()
+        guard rect.height > 0, selection.length == 0 || hasMarkedText(),
+              let layoutManager = textLayoutManager, let content = layoutManager.textContentManager,
+              let location = content.location(content.documentRange.location, offsetBy: selection.location),
+              let fragment = layoutManager.textLayoutFragment(for: location)
+        else { return nil }
+        let frame = fragment.layoutFragmentFrame
+        let y = rect.midY - textContainerOrigin.y - frame.minY
+        // 折り返しの境目では同じ位置が2つの行にあるので、NSTextView が置いた高さの行を選ぶ
+        guard let line = fragment.textLineFragments.first(where: { $0.typographicBounds.minY <= y && y < $0.typographicBounds.maxY })
+        else { return nil }
+        let string = line.attributedString
+        let range = line.characterRange
+        let index = content.offset(from: fragment.rangeInElement.location, to: location)
+        func visibleFont(at i: Int) -> (NSFont, CGFloat)? {
+            guard i >= range.location, i < NSMaxRange(range), i < string.length,
+                  let font = string.attribute(.font, at: i, effectiveRange: nil) as? NSFont, font.pointSize >= 1
+            else { return nil }
+            return (font, string.attribute(.baselineOffset, at: i, effectiveRange: nil) as? CGFloat ?? 0)
+        }
+        var found: (NSFont, CGFloat)?
+        for distance in 0..<max(range.length, 1) {
+            found = visibleFont(at: index - 1 - distance) ?? visibleFont(at: index + distance)
+            if found != nil { break }
+        }
+        guard let (font, baselineOffset) = found else { return nil }
+        let baseline = textContainerOrigin.y + frame.minY + line.typographicBounds.minY + line.glyphOrigin.y - baselineOffset
+        // NSTextView が置いた枠からははみ出さない
+        let top = max(rect.minY, baseline - font.ascender)
+        let bottom = min(rect.maxY, baseline - font.descender)
+        guard bottom > top else { return nil }
+        return NSRect(x: rect.minX, y: top, width: rect.width, height: bottom - top)
+    }
+
     // MARK: - 当たり判定
 
     private func containerPoint(_ point: NSPoint) -> CGPoint {
