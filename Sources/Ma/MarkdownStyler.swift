@@ -589,18 +589,22 @@ struct MarkdownStyler {
     }
 
     private func styleInline(_ text: String, line: NSRange, in storage: NSTextStorage, active: Bool) {
-        // コードの中は他の記法として解釈しない
-        var codeRanges: [NSRange] = []
+        // コードの中は他の記法として解釈しない。コードを記号でも空白でもない文字で塗りつぶした行を作り、他の記法はそこで探す。
+        // コードと重なる一致を捨てるだけだと、**`code`** のようにコードを丸ごと囲む記法まで捨ててしまう
+        let string = text as NSString
+        let masked = NSMutableString(string: string.substring(with: line))
         for match in inlineCode.matches(in: text, range: line) {
-            codeRanges.append(match.range)
             storage.addAttributes([.font: monoFont, .backgroundColor: NSColor.quaternarySystemFill], range: match.range)
             wrapMarkers(match.range, length: 1, in: storage, active: active)
+            masked.replaceCharacters(
+                in: NSRange(location: match.range.location - line.location, length: match.range.length),
+                with: String(repeating: "\u{FFFC}", count: match.range.length)
+            )
         }
-        let string = text as NSString
+        let maskedText = masked as String
         func matches(_ regex: NSRegularExpression) -> [NSTextCheckingResult] {
-            regex.matches(in: text, range: line).filter { match in
-                !codeRanges.contains { NSIntersectionRange($0, match.range).length > 0 }
-            }
+            regex.matches(in: maskedText, range: NSRange(location: 0, length: masked.length))
+                .map { $0.adjustingRanges(offset: line.location) }
         }
 
         for match in matches(bold) {
