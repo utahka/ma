@@ -614,6 +614,11 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     /// Tab で次のセル、Shift+Tab で前のセル、Enter で下の行、Shift+Enter でセル内の改行（<br>）
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if !sourceMode, selector == #selector(NSResponder.insertTab(_:))
+            || selector == #selector(NSResponder.insertBacktab(_:)),
+           shiftListItems(outdent: selector == #selector(NSResponder.insertBacktab(_:))) {
+            return true
+        }
         guard !sourceMode, textView.selectedRange().length == 0 else { return false }
         let caret = textView.selectedRange().location
         guard let table = tables.first(where: { NSLocationInRange(caret, $0.tableRange) || caret == $0.endOfLastRow }),
@@ -660,6 +665,48 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.replace(edit.range, with: edit.replacement, actionName: "改行")
         textView.setSelectedRange(NSRange(location: edit.caret, length: 0))
         textView.scrollRangeToVisible(textView.selectedRange())
+        return true
+    }
+
+    /// リスト項目の行で Tab なら1段深く、Shift+Tab なら1段浅くする（カーソルの位置によらず、子の項目も一緒に）。
+    /// リスト項目の行でなければ false
+    private func shiftListItems(outdent: Bool) -> Bool {
+        let string = textView.string as NSString
+        let selection = textView.selectedRange()
+        // 行番号は手前の改行の数。範囲選択が次の行の先頭で終わるときは、その行を含めない
+        func line(at location: Int) -> Int {
+            string.substring(to: location).utf16.reduce(0) { $0 + ($1 == 0x0A ? 1 : 0) }
+        }
+        let firstLine = line(at: selection.location)
+        var end = NSMaxRange(selection)
+        if selection.length > 0, string.character(at: end - 1) == 0x0A { end -= 1 }
+        let lastLine = max(firstLine, line(at: end))
+        let mover = BlockMover(textView.string)
+        guard let shift = mover.shiftingListItems(in: firstLine...lastLine, outdent: outdent) else { return false }
+        // Tab をリストの行で受けたら、何も変わらない（すでに一番浅い）ときもタブ文字は入れない
+        guard shift.shifts.contains(where: { $0 != 0 }) else { return true }
+
+        let start = mover.lines[..<shift.lines.lowerBound].reduce(0) { $0 + ($1 as NSString).length + 1 }
+        let length = mover.lines[shift.lines].reduce(0) { $0 + ($1 as NSString).length + 1 } - 1
+        // 選択の位置を、行頭で増減した文字数に合わせて動かす（外した空白の中にあった位置は行頭へ）
+        var lineStarts: [Int] = []
+        var position = start
+        for text in mover.lines[shift.lines] {
+            lineStarts.append(position)
+            position += (text as NSString).length + 1
+        }
+        func mapped(_ location: Int) -> Int {
+            var result = location
+            for (lineStart, delta) in zip(lineStarts, shift.shifts) where lineStart <= location {
+                result += delta >= 0 ? delta : -min(-delta, location - lineStart)
+            }
+            return result
+        }
+        let newStart = mapped(selection.location)
+        let newEnd = selection.length == 0 ? newStart : mapped(NSMaxRange(selection))
+        textView.replace(NSRange(location: start, length: length), with: shift.text.joined(separator: "\n"),
+                         actionName: outdent ? "インデントを減らす" : "インデントを増やす")
+        textView.setSelectedRange(NSRange(location: newStart, length: max(0, newEnd - newStart)))
         return true
     }
 
