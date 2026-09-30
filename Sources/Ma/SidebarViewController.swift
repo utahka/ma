@@ -11,9 +11,21 @@ private final class BookmarkNode {
     }
 }
 
-/// 上部のボタンで切り替える、ファイルツリーとお気に入りの一覧。その下にカレンダー。
+/// ファイル検索の結果の行。vault からの相対パスはフォルダ名を添えて同名のノートを見分けるのに使う
+private final class SearchResult {
+    let node: FileNode
+    let path: String
+
+    init(node: FileNode, path: String) {
+        self.node = node
+        self.path = path
+    }
+}
+
+/// 上部のボタンで切り替える、ファイルツリーとお気に入りの一覧。その上に検索欄、下にカレンダー。
 /// ノートを選ぶと `onSelect` を呼ぶ（⌘クリックは新しいタブ）
-final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
+final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate,
+    NSSearchFieldDelegate {
     enum Mode: String {
         case files
         case bookmarks
@@ -38,6 +50,12 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private let bookmarksView = NSOutlineView()
     private var scrollViews: [Mode: NSScrollView] = [:]
     private var modeButtons: [Mode: NSButton] = [:]
+    /// 検索欄に文字があるあいだは、一覧の代わりに名前・パスで絞り込んだファイルを平らに並べる
+    private let searchField = NSSearchField()
+    private let searchView = NSOutlineView()
+    private var searchScrollView: NSScrollView!
+    private var searchResults: [SearchResult] = []
+    private var isSearching: Bool { !searchField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty }
     private let emptyBookmarksLabel = NSTextField(wrappingLabelWithString: "お気に入りはありません。右クリックか ⌘⇧B で追加できます")
     private var tree: [FileNode] = []
     private var bookmarkNodes: [BookmarkNode] = []
@@ -71,7 +89,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         if let favorite = modeButtons[.bookmarks] { buttons.setCustomSpacing(TrafficLights.sidebarToggleGap, after: favorite) }
         buttons.addArrangedSubview(toggle)
 
-        for (mode, outlineView) in [(Mode.files, filesView), (.bookmarks, bookmarksView)] {
+        func makeList(_ outlineView: NSOutlineView) -> NSScrollView {
             let column = NSTableColumn(identifier: .init("name"))
             outlineView.addTableColumn(column)
             outlineView.outlineTableColumn = column
@@ -82,10 +100,6 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             outlineView.delegate = self
             outlineView.target = self
             outlineView.action = #selector(outlineViewClicked(_:))
-            let menu = NSMenu()
-            menu.delegate = self
-            outlineView.menu = menu
-
             let scrollView = NSScrollView()
             scrollView.hasVerticalScroller = true
             scrollView.autohidesScrollers = true
@@ -93,8 +107,21 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             // タイトルバーの下から置くので、タイトルバーの分の余白は要らない
             scrollView.automaticallyAdjustsContentInsets = false
             scrollView.documentView = outlineView
-            scrollViews[mode] = scrollView
+            return scrollView
         }
+        for (mode, outlineView) in [(Mode.files, filesView), (.bookmarks, bookmarksView)] {
+            let menu = NSMenu()
+            menu.delegate = self
+            outlineView.menu = menu
+            scrollViews[mode] = makeList(outlineView)
+        }
+        searchScrollView = makeList(searchView)
+        searchScrollView.isHidden = true
+
+        searchField.placeholderString = "ファイルを検索"
+        searchField.delegate = self
+        // 既定では入力の途中でも action が送られる。開くのは Return と行のクリックだけにする
+        searchField.sendsWholeSearchString = true
 
         emptyBookmarksLabel.textColor = .secondaryLabelColor
         emptyBookmarksLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -104,8 +131,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         separator.boxType = .separator
 
         let container = NSView()
-        let lists = scrollViews.values.map { $0 as NSView }
-        for view in [buttons, separator, calendarView, emptyBookmarksLabel] + lists {
+        let lists = (Array(scrollViews.values) + [searchScrollView]).map { $0 as NSView }
+        for view in [buttons, searchField, separator, calendarView, emptyBookmarksLabel] + lists {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -115,6 +142,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             // 信号機ボタンの右に、タブの文字と同じ高さで並べる（上に余白を取る）
             buttons.centerYAnchor.constraint(equalTo: container.topAnchor, constant: TrafficLights.centerY),
             buttons.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: TrafficLights.sidebarButtonsLeading),
+            searchField.topAnchor.constraint(equalTo: container.topAnchor, constant: TabBarView.height + 4),
+            searchField.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+            searchField.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
             separator.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
             separator.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
             calendarView.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: padding / 2),
@@ -122,13 +152,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             calendarView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
             calendarView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -padding),
             calendarView.heightAnchor.constraint(equalToConstant: CalendarView.preferredHeight),
-            emptyBookmarksLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: TabBarView.height + padding * 2),
+            emptyBookmarksLabel.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: padding * 2),
             emptyBookmarksLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding * 2),
             emptyBookmarksLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding * 2),
         ]
-        for scrollView in scrollViews.values {
+        for scrollView in Array(scrollViews.values) + [searchScrollView!] {
             constraints += [
-                scrollView.topAnchor.constraint(equalTo: container.topAnchor, constant: TabBarView.height + 4),
+                scrollView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 6),
                 scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
                 scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
                 separator.topAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: padding),
@@ -157,12 +187,96 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     func show(_ mode: Mode) {
         self.mode = mode
         AppDefaults.shared.set(mode.rawValue, forKey: "sidebarMode")
-        for (key, scrollView) in scrollViews { scrollView.isHidden = key != mode }
         for (key, button) in modeButtons {
             button.contentTintColor = key == mode ? .controlAccentColor : .secondaryLabelColor
         }
-        updateEmptyLabel()
+        updateVisibleList()
         select(currentURL)
+    }
+
+    /// 検索中は検索結果を、それ以外は選んでいる一覧を出す
+    private func updateVisibleList() {
+        for (key, scrollView) in scrollViews { scrollView.isHidden = isSearching || key != mode }
+        searchScrollView.isHidden = !isSearching
+        updateEmptyLabel()
+    }
+
+    // MARK: - 検索
+
+    /// ⌘P。サイドバーを閉じていれば開き、検索欄に入力できるようにする
+    func focusSearch() {
+        if let item = (parent as? NSSplitViewController)?.splitViewItem(for: self), item.isCollapsed {
+            item.isCollapsed = false
+        }
+        view.window?.makeFirstResponder(searchField)
+        searchField.currentEditor()?.selectAll(nil)
+    }
+
+    func controlTextDidChange(_ obj: Notification) { updateSearch() }
+
+    /// 検索欄にフォーカスを置いたまま、↑↓ で候補を選び、Return で開き（⌘Return は新しいタブ）、Esc で検索をやめる
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.moveUp(_:)): moveSearchSelection(by: -1)
+        case #selector(NSResponder.moveDown(_:)): moveSearchSelection(by: 1)
+        case #selector(NSResponder.insertNewline(_:)):
+            let row = searchView.selectedRow
+            guard searchResults.indices.contains(row) else { return true }
+            onSelect?(searchResults[row].node.url, NSApp.currentEvent?.modifierFlags.contains(.command) == true)
+        case #selector(NSResponder.cancelOperation(_:)):
+            if isSearching {
+                searchField.stringValue = ""
+                updateSearch()
+            } else {
+                view.window?.makeFirstResponder(nil)
+            }
+        default: return false
+        }
+        return true
+    }
+
+    private func moveSearchSelection(by offset: Int) {
+        guard !searchResults.isEmpty else { return }
+        let row = min(max(searchView.selectedRow + offset, 0), searchResults.count - 1)
+        selectSearchRow(row)
+    }
+
+    /// 矢印キーで選んでいる間はノートを開かない
+    private func selectSearchRow(_ row: Int) {
+        isSyncingSelection = true
+        searchView.selectRowIndexes([row], byExtendingSelection: false)
+        isSyncingSelection = false
+        searchView.scrollRowToVisible(row)
+    }
+
+    /// 空白で区切った語をすべてパスに含むファイルを、名前がその語で始まるもの、パス順の順に並べる
+    private func updateSearch() {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
+            .precomposedStringWithCanonicalMapping.lowercased()
+        let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        var results: [SearchResult] = []
+        func collect(_ nodes: [FileNode], prefix: String) {
+            for node in nodes {
+                let path = prefix + node.url.lastPathComponent.precomposedStringWithCanonicalMapping
+                if node.isDirectory {
+                    collect(node.children, prefix: path + "/")
+                } else if !words.isEmpty, words.allSatisfy(path.lowercased().contains) {
+                    results.append(SearchResult(node: node, path: path))
+                }
+            }
+        }
+        collect(tree, prefix: "")
+        searchResults = results.sorted { lhs, rhs in
+            let leftPrefix = lhs.node.name.lowercased().hasPrefix(query)
+            let rightPrefix = rhs.node.name.lowercased().hasPrefix(query)
+            if leftPrefix != rightPrefix { return leftPrefix }
+            return lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+        }
+        isSyncingSelection = true
+        searchView.reloadData()
+        isSyncingSelection = false
+        if !searchResults.isEmpty { selectSearchRow(0) }
+        updateVisibleList()
     }
 
     /// 応答チェーンに任せると、ウィンドウがキーでないときに NSSplitViewController まで届かないので、親に直接送る
@@ -175,12 +289,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func updateEmptyLabel() {
-        emptyBookmarksLabel.isHidden = mode != .bookmarks || !bookmarkNodes.isEmpty
+        emptyBookmarksLabel.isHidden = isSearching || mode != .bookmarks || !bookmarkNodes.isEmpty
     }
 
     func reload(_ tree: [FileNode]) {
         self.tree = tree
         reloadData(of: filesView)
+        if isSearching { updateSearch() }
     }
 
     func reload(bookmarks: [Bookmark]) {
@@ -235,6 +350,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         guard row >= 0 else { return nil }
         switch outlineView.item(atRow: row) {
         case let node as FileNode: return node.isDirectory ? nil : node.url
+        case let result as SearchResult: return result.node.url
         case let node as BookmarkNode:
             if case .file = node.bookmark.kind { return node.bookmark.url }
             return nil
@@ -247,6 +363,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         guard NSApp.currentEvent?.modifierFlags.contains(.command) == true else { return }
         switch sender.item(atRow: sender.clickedRow) {
         case let node as FileNode where !node.isDirectory: onSelect?(node.url, true)
+        case let result as SearchResult: onSelect?(result.node.url, true)
         case let node as BookmarkNode: onOpenBookmark?(node.bookmark, true)
         default: break
         }
@@ -256,7 +373,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         switch item {
         case let node as BookmarkNode: node.children.count
         case let node as FileNode: node.children.count
-        default: outlineView === bookmarksView ? bookmarkNodes.count : tree.count
+        case is SearchResult: 0
+        default: outlineView === searchView ? searchResults.count : outlineView === bookmarksView ? bookmarkNodes.count : tree.count
         }
     }
 
@@ -264,7 +382,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         switch item {
         case let node as BookmarkNode: node.children[index]
         case let node as FileNode: node.children[index]
-        default: outlineView === bookmarksView ? bookmarkNodes[index] : tree[index]
+        default:
+            if outlineView === searchView { searchResults[index] }
+            else if outlineView === bookmarksView { bookmarkNodes[index] }
+            else { tree[index] }
         }
     }
 
@@ -280,10 +401,24 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let identifier = NSUserInterfaceItemIdentifier("cell")
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? makeCell(identifier)
         let symbol: String
+        cell.toolTip = nil
         switch item {
         case let node as FileNode:
             cell.textField?.stringValue = node.name
             symbol = node.isDirectory ? "folder" : node.isBase ? "tablecells" : "doc.text"
+        case let result as SearchResult:
+            // 名前の後ろにフォルダを薄く添える
+            let text = NSMutableAttributedString(string: result.node.name)
+            let folder = (result.path as NSString).deletingLastPathComponent
+            if !folder.isEmpty {
+                text.append(NSAttributedString(string: "  " + folder, attributes: [
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                ]))
+            }
+            cell.textField?.attributedStringValue = text
+            cell.toolTip = result.path
+            symbol = result.node.isBase ? "tablecells" : "doc.text"
         case let node as BookmarkNode:
             let bookmark = node.bookmark
             cell.textField?.stringValue = bookmark.displayName
@@ -310,6 +445,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         guard !isSyncingSelection, NSApp.currentEvent?.modifierFlags.contains(.command) != true,
               let outlineView = notification.object as? NSOutlineView else { return }
         switch outlineView.item(atRow: outlineView.selectedRow) {
+        case let result as SearchResult:
+            onSelect?(result.node.url, false)
         case let node as FileNode:
             if node.isDirectory {
                 // フォルダは選択ではなく開閉として扱う
