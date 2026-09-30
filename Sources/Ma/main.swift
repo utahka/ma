@@ -497,14 +497,12 @@ enum TrafficLights {
     static let spacing: CGFloat = 20
     /// 緑のボタンの右端
     static let trailing: CGFloat = leading + spacing * 2 + 14
-    /// サイドバー上端のボタン（ファイル・お気に入り・開閉）の左端と、1つの幅
+    /// サイドバー上端のボタン（ファイル・お気に入り）の左端と、1つの幅
     static let sidebarButtonsLeading: CGFloat = trailing + 15
     static let sidebarButtonWidth: CGFloat = 26
-    /// 一覧の切り替えボタンと開閉ボタンの間
-    static let sidebarToggleGap: CGFloat = 12
-    /// サイドバーの開閉ボタンの左端と幅。サイドバーを閉じたときもタブバーの同じ位置に出して、開閉でアイコンが動かないようにする
-    static let sidebarToggleLeading: CGFloat = sidebarButtonsLeading + sidebarButtonWidth * 2 + 4 + sidebarToggleGap
+    /// サイドバーの開閉ボタンの幅と、サイドバーの右端からの余白。閉じたときはタブバーの左端（信号機ボタンの右）に同じ幅で出す
     static let sidebarToggleWidth: CGFloat = sidebarButtonWidth
+    static let sidebarToggleTrailing: CGFloat = 8
 }
 
 private extension NSMenu {

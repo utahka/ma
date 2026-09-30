@@ -63,13 +63,11 @@ final class TabBarView: NSView {
 
     private var midY: CGFloat { tabTop + (bounds.height - tabTop) / 2 }
 
-    /// サイドバーの閉じるボタンと同じ位置（フルスクリーンでは信号機ボタンがないので左端）に置く
+    /// 信号機ボタンのすぐ右（フルスクリーンでは信号機ボタンがないので左端）に置く
     private var sidebarRect: CGRect? {
         guard showsSidebarButton else { return nil }
         let width = TrafficLights.sidebarToggleWidth
-        let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
-        let x = fullScreen ? 8 : max(8, TrafficLights.sidebarToggleLeading - convert(NSPoint.zero, to: nil).x)
-        return CGRect(x: x, y: midY - width / 2, width: width, height: width)
+        return CGRect(x: leadingInset, y: midY - width / 2, width: width, height: width)
     }
 
     private var backRect: CGRect {
