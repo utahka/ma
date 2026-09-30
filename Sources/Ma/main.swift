@@ -72,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         sidebar.isBookmarked = { [vault] url in vault.isBookmarked(url) }
         vault.onBookmarksChange = { [unowned self] in
             sidebar.reload(bookmarks: vault.bookmarks)
-            updateFavoriteButton()
+            updateNoteHeader()
         }
         editor.onToggleFavorite = { [unowned self] in toggleBookmark(nil) }
         sidebar.calendarView.onSelectDate = { [vault] date in vault.openDailyNote(for: date) }
@@ -90,12 +90,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             sidebar.calendarView.selectedDate = url.flatMap { vault.dailyNotes?.date(of: $0) }
             window.title = url?.deletingPathExtension().lastPathComponent ?? "Ma"
             window.subtitle = vault.root?.lastPathComponent ?? ""
-            updateFavoriteButton()
+            updateNoteHeader()
         }
     }
 
-    private func updateFavoriteButton() {
+    private func updateNoteHeader() {
         editor.setFavorite(vault.activeTab.url.map { vault.isBookmarked($0) })
+        // `.base` の表は左上にビューの切り替えがあるので、パスはノートのときだけ出す
+        let url = vault.activeTab.url.flatMap { $0.pathExtension.lowercased() == "base" ? nil : $0 }
+        editor.setNotePath(url.flatMap { vault.relativePath(of: $0) })
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
