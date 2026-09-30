@@ -443,31 +443,48 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
                                y: center - size.height / 2))
     }
 
+    nonisolated(unsafe) private static let chevronFont = NSFont.systemFont(ofSize: 15, weight: .semibold)
+
+    private static func chevron(collapsed: Bool, color: NSColor) -> NSAttributedString {
+        NSAttributedString(string: collapsed ? "›" : "⌄", attributes: [.font: chevronFont, .foregroundColor: color])
+    }
+
+    /// 折りたためるコールアウトの右上の開閉の印の、クリックを受ける範囲（横はテキストコンテナ、縦はフラグメントの上端からの座標）
+    func foldButtonRect() -> CGRect? {
+        guard let box = decoration as? BoxDecoration, box.isFirst, box.foldable else { return nil }
+        let size = Self.chevron(collapsed: box.collapsed, color: box.color).size()
+        let center = CGPoint(x: padding + availableWidth - 14 - size.width / 2, y: firstLineTextCenter(from: .zero))
+        let side: CGFloat = 24
+        return CGRect(x: center.x - side / 2, y: center.y - side / 2, width: side, height: side)
+    }
+
     private func drawBoxHeader(_ box: BoxDecoration, at point: CGPoint) {
-        guard box.isFirst, let icon = box.icon else { return }
+        guard box.isFirst, !box.isQuote else { return }
         let center = firstLineTextCenter(from: point)
         let left = textLeft(from: point) + 14
-        let configuration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-            .applying(.init(paletteColors: [box.color]))
-        if let image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)?
-            .withSymbolConfiguration(configuration) {
-            let size = image.size
-            image.draw(
-                in: CGRect(x: left + (16 - size.width) / 2, y: center - size.height / 2,
-                           width: size.width, height: size.height),
-                from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil
-            )
+        var titleLeft = left
+        if let icon = box.icon {
+            let configuration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+                .applying(.init(paletteColors: [box.color]))
+            if let image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)?
+                .withSymbolConfiguration(configuration) {
+                let size = image.size
+                image.draw(
+                    in: CGRect(x: left + (16 - size.width) / 2, y: center - size.height / 2,
+                               width: size.width, height: size.height),
+                    from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil
+                )
+            }
+            titleLeft += 24
         }
         if let title = box.fallbackTitle {
             let string = NSAttributedString(string: title, attributes: [
                 .font: NSFont.systemFont(ofSize: 15, weight: .semibold), .foregroundColor: box.color,
             ])
-            string.draw(at: CGPoint(x: left + 24, y: center - string.size().height / 2))
+            string.draw(at: CGPoint(x: titleLeft, y: center - string.size().height / 2))
         }
         if box.foldable {
-            let chevron = NSAttributedString(string: box.collapsed ? "›" : "⌄", attributes: [
-                .font: NSFont.systemFont(ofSize: 15, weight: .semibold), .foregroundColor: box.color,
-            ])
+            let chevron = Self.chevron(collapsed: box.collapsed, color: box.color)
             let size = chevron.size()
             chevron.draw(at: CGPoint(x: textLeft(from: point) + availableWidth - 14 - size.width,
                                      y: center - size.height / 2))

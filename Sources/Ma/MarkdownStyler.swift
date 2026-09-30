@@ -49,12 +49,15 @@ struct MarkdownStyler {
     /// 装飾をかけ直し、文書中の表を返す。`availableWidth` は本文の幅で、表が収まらないときの縮小に使う。
     /// `sourceMode` では装飾を外し、等幅フォントで Markdown をそのまま見せる。
     /// `draggedWidths` は列幅をドラッグ中の表の幅。区切り行の位置で表を特定し、区切り行から読んだ幅の代わりに使う。
-    /// `frontmatter` の範囲は文字を隠し、最初の行の高さを `height` にして、そこにプロパティ欄を重ねられるようにする
+    /// `frontmatter` の範囲は文字を隠し、最初の行の高さを `height` にして、そこにプロパティ欄を重ねられるようにする。
+    /// `calloutIcons` が false ならコールアウトのタイトルの左のアイコンを描かない。
+    /// `expandedCallouts` は開閉の印で開いた `[!note]-` の見出し行の先頭で、カーソルが外にあってもたたまない
     @discardableResult
     func apply(
         to storage: NSTextStorage, activeRange: NSRange, availableWidth: CGFloat, sourceMode: Bool,
         draggedWidths: (separator: Int, widths: [CGFloat])? = nil,
-        frontmatter: (range: NSRange, height: CGFloat)? = nil
+        frontmatter: (range: NSRange, height: CGFloat)? = nil,
+        calloutIcons: Bool = true, expandedCallouts: Set<Int> = []
     ) -> [TableLayout] {
         let text = storage.string
         let string = text as NSString
@@ -119,7 +122,8 @@ struct MarkdownStyler {
                 var end = index + 1
                 while end < lines.count, quote.firstMatch(in: text, range: lines[end].content) != nil { end += 1 }
                 let block = Array(lines[index..<end])
-                styleQuoteBlock(block, text: text, in: storage, blockActive: isActive(block.first!.full.union(block.last!.full)), isActive: isActive)
+                styleQuoteBlock(block, text: text, in: storage, blockActive: isActive(block.first!.full.union(block.last!.full)),
+                                showsIcon: calloutIcons, expanded: expandedCallouts.contains(block[0].full.location), isActive: isActive)
                 index = end
                 continue
             }
@@ -439,7 +443,8 @@ struct MarkdownStyler {
     // MARK: - 引用とコールアウト
 
     private func styleQuoteBlock(
-        _ block: [Line], text: String, in storage: NSTextStorage, blockActive: Bool, isActive: (NSRange) -> Bool
+        _ block: [Line], text: String, in storage: NSTextStorage, blockActive: Bool, showsIcon: Bool, expanded: Bool,
+        isActive: (NSRange) -> Bool
     ) {
         let header = calloutHeader.firstMatch(in: text, range: block[0].content)
         let string = text as NSString
@@ -447,9 +452,9 @@ struct MarkdownStyler {
             let type = string.substring(with: match.range(at: 1)).lowercased()
             return CalloutStyle(type: type)
         }
-        // [!note]- は、カーソルがコールアウトの外にあるあいだ本文をたたむ
+        // [!note]- は、カーソルがコールアウトの外にあり、開閉の印で開いてもいないあいだ本文をたたむ
         let folded = header.map { $0.range(at: 2).location != NSNotFound && string.substring(with: $0.range(at: 2)) == "-" } ?? false
-        let collapsed = folded && !blockActive
+        let collapsed = folded && !blockActive && !expanded
 
         for (lineIndex, line) in block.enumerated() {
             let active = isActive(line.full)
@@ -467,7 +472,7 @@ struct MarkdownStyler {
 
             if let header, isFirst, let callout {
                 let title = header.range(at: 3)
-                style.firstLineHeadIndent = 14 + 24
+                style.firstLineHeadIndent = showsIcon ? 14 + 24 : 14
                 marker(NSRange(location: line.content.location, length: title.location - line.content.location), in: storage, active: active)
                 storage.addAttributes([
                     .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
@@ -478,7 +483,7 @@ struct MarkdownStyler {
                 storage.addAttributes([
                     .paragraphStyle: style,
                     .maBlock: BoxDecoration(
-                        color: callout.color, icon: callout.icon, fallbackTitle: fallback,
+                        color: callout.color, icon: showsIcon ? callout.icon : nil, fallbackTitle: fallback,
                         foldable: folded, collapsed: collapsed, isFirst: true, isLast: isLast
                     ),
                 ], range: line.full)

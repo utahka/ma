@@ -23,6 +23,9 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     private static let sourceModeKey = "sourceMode"
     /// ソース表示（装飾なし）かどうか。⌘E で全タブまとめて切り替え、次回の起動にも引き継ぐ
     private var sourceMode = AppDefaults.shared.bool(forKey: sourceModeKey)
+    private static let hidesCalloutIconsKey = "hidesCalloutIcons"
+    /// コールアウトのタイトルの左にアイコンを描くかどうか。表示メニューで全タブまとめて切り替え、次回の起動にも引き継ぐ
+    private var showsCalloutIcons = !AppDefaults.shared.bool(forKey: hidesCalloutIconsKey)
 
     private var editors: [EditorViewController] { contents.values.compactMap { $0 as? EditorViewController } }
     private var bases: [BaseViewController] { contents.values.compactMap { $0 as? BaseViewController } }
@@ -178,6 +181,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         // 読み込み時に空の表示にするので、中身を渡す前に読み込んでおく
         editor.loadViewIfNeeded()
         editor.sourceMode = sourceMode
+        editor.showsCalloutIcons = showsCalloutIcons
         editor.onChange = { [weak self] url, text in self?.onChange?(url, text) }
         editor.onOpenLink = { [weak self] target, newTab in self?.onOpenLink?(target, newTab) }
         editor.propertyTypes = { [weak self] in self?.propertyTypes() }
@@ -201,11 +205,20 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         for editor in editors { editor.sourceMode = sourceMode }
     }
 
+    @objc func toggleCalloutIcons(_ sender: Any?) {
+        showsCalloutIcons.toggle()
+        AppDefaults.shared.set(!showsCalloutIcons, forKey: Self.hidesCalloutIconsKey)
+        for editor in editors { editor.showsCalloutIcons = showsCalloutIcons }
+    }
+
     @objc func addProperty(_ sender: Any?) { (shown as? EditorViewController)?.addProperty() }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSourceMode(_:)) {
             menuItem.state = sourceMode ? .on : .off
+        }
+        if menuItem.action == #selector(toggleCalloutIcons(_:)) {
+            menuItem.state = showsCalloutIcons ? .on : .off
         }
         if menuItem.action == #selector(addProperty(_:)) { return shown is EditorViewController }
         return true

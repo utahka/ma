@@ -375,6 +375,11 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         didSet { if sourceMode != oldValue, isViewLoaded { restyle(force: true) } }
     }
 
+    /// コールアウトのタイトルの左にアイコンを描くかどうか。切り替えと記録は EditorAreaViewController が受け持つ
+    var showsCalloutIcons = true {
+        didSet { if showsCalloutIcons != oldValue, isViewLoaded { restyle(force: true) } }
+    }
+
     override func loadView() {
         textView.delegate = self
         textView.textLayoutManager?.delegate = layoutDelegate
@@ -607,7 +612,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         let styled = NSTextStorage(attributedString: storage)
         tables = styler.apply(to: styled, activeRange: lines, availableWidth: textView.textWidth, sourceMode: sourceMode,
                               draggedWidths: textView.draggedWidths,
-                              frontmatter: frontmatter.flatMap { fm in height.map { (fm.range, $0) } })
+                              frontmatter: frontmatter.flatMap { fm in height.map { (fm.range, $0) } },
+                              calloutIcons: showsCalloutIcons)
         let string = storage.string as NSString
         storage.beginEditing()
         var position = 0
