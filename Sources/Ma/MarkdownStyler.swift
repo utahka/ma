@@ -493,6 +493,8 @@ struct MarkdownStyler {
                 style.minimumLineHeight = 0.01
                 style.maximumLineHeight = 0.01
                 style.lineSpacing = 0
+                // 最後の行の下の余白（枠の内側の余白）も消す。残すと、たたんだ枠の下が空く
+                style.paragraphSpacing = 0
                 storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear, .paragraphStyle: style], range: line.full)
                 continue
             }
