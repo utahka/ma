@@ -206,6 +206,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         base.onOpenNote = { [weak self] url, newTab in self?.onOpenNote?(url, newTab) }
         base.onSetProperty = { [weak self] url, key, value, type in self?.onSetProperty?(url, key, value, type) }
         base.onRenameProperty = { [weak self] urls, key, newKey in self?.onRenameProperty?(urls, key, newKey) }
+        base.onSetPropertyType = { [weak self] key, type in self?.propertyTypes()?.set(type, for: key) }
         return base
     }
 

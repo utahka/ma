@@ -10,6 +10,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     var onSetProperty: ((URL, String, PropertyValue, PropertyType) -> Void)?
     /// プロパティ名を変えたとき（書き換えるノート、古い名前、新しい名前）。ノートへの書き込みは呼び出し側が受け持つ
     var onRenameProperty: (([URL], String, String) -> Void)?
+    /// 列を足したときに、Obsidian の型を `.obsidian/types.json` に記録する
+    var onSetPropertyType: ((String, PropertyType) -> Void)?
 
     private enum Row {
         case group(BaseValue, property: String, count: Int)
@@ -287,6 +289,16 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             column.headerCell.font = .systemFont(ofSize: 12)
             tableView.addTableColumn(column)
         }
+        // 右端の「＋」の列（Notion の表と同じく、ここからプロパティを足す）。`.base` の order には書かない
+        let add = NSTableColumn(identifier: BaseTableView.addColumnID)
+        add.title = "＋"
+        add.headerCell.alignment = .center
+        add.headerCell.font = .systemFont(ofSize: 14)
+        add.width = 36
+        add.minWidth = 36
+        add.resizingMask = []
+        add.headerToolTip = "プロパティを追加"
+        tableView.addTableColumn(add)
     }
 
     // MARK: - 列の幅と順番の保存
@@ -309,11 +321,11 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     private func saveColumns() {
         guard let url, let base, base.views.indices.contains(selectedView) else { return }
         let view = base.views[selectedView]
-        let ids = tableView.tableColumns.map(\.identifier.rawValue)
+        let ids = tableView.tableColumns.map(\.identifier).filter { $0 != BaseTableView.addColumnID }.map(\.rawValue)
         let raw = Dictionary(zip(view.order, view.rawOrder), uniquingKeysWith: { first, _ in first })
         let order = ids.map { raw[$0] ?? $0 }
         var sizes: [String: Int] = [:]
-        for column in tableView.tableColumns {
+        for column in tableView.tableColumns where column.identifier != BaseTableView.addColumnID {
             let width = Int(column.width.rounded())
             if width != Int((view.columnSize[column.identifier.rawValue] ?? 150).rounded()) { sizes[column.identifier.rawValue] = width }
         }
@@ -375,7 +387,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     private func hideColumn(_ property: String) {
-        let ids = tableView.tableColumns.map(\.identifier.rawValue).filter { $0 != property }
+        let ids = tableView.tableColumns.map(\.identifier).filter { $0 != BaseTableView.addColumnID }.map(\.rawValue).filter { $0 != property }
         saveVisibleColumns(ids)
     }
 
@@ -383,7 +395,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// 列の見出しの右クリックメニュー。列ごとの操作はここに項目を足す
     private func columnMenu(at column: Int) -> NSMenu? {
-        guard tableView.tableColumns.indices.contains(column) else { return nil }
+        guard tableView.tableColumns.indices.contains(column),
+              tableView.tableColumns[column].identifier != BaseTableView.addColumnID else { return nil }
         let property = tableView.tableColumns[column].identifier.rawValue
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -393,7 +406,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             item.isEnabled = enabled
             menu.addItem(item)
         }
-        add("列を隠す", symbol: "eye.slash", enabled: tableView.tableColumns.count > 1) { [weak self] in
+        add("列を隠す", symbol: "eye.slash", enabled: tableView.tableColumns.count > 2) { [weak self] in
             self?.hideColumn(property)
         }
         // ファイルの属性（file.*）や式（formula.*）はノートのプロパティではないので名前を変えられない
@@ -500,6 +513,89 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         onRenameProperty?(targets, old, new)
         reload()
+    }
+
+    /// 「＋」の列は右端から動かさない
+    func tableView(_ tableView: NSTableView, shouldReorderColumn columnIndex: Int, toColumn newColumnIndex: Int) -> Bool {
+        let last = tableView.numberOfColumns - 1
+        return columnIndex != last && newColumnIndex != last
+    }
+
+    /// 表の上の見出しの「＋」を押したとき（グループに分けないビュー）
+    func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
+        guard tableColumn.identifier == BaseTableView.addColumnID, let header = tableView.headerView,
+              let index = tableView.tableColumns.firstIndex(of: tableColumn) else { return }
+        showPropertyAdder(relativeTo: header.headerRect(ofColumn: index), of: header)
+    }
+
+    // MARK: - プロパティの追加
+
+    private func showPropertyAdder(relativeTo rect: NSRect, of view: NSView) {
+        guard let base else { return }
+        let adder = BasePropertyAdder()
+        adder.existing = { [weak self] name in
+            guard let self, let id = self.existingProperty(named: name, base: base) else { return nil }
+            return base.displayName(of: id)
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = adder
+        adder.onAdd = { [weak self, weak popover] name, kind in
+            popover?.close()
+            self?.addProperty(named: name, kind: kind)
+        }
+        popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)
+    }
+
+    /// 名前が既存のプロパティ（`.base` に定義がある・表示名が同じ・types.json に型がある・どれかのノートにある）なら、その列の ID
+    private func existingProperty(named name: String, base: BaseFile) -> String? {
+        if let id = base.displayNames.first(where: { $0.value == name })?.key { return id }
+        let id = BaseExpression.propertyID(name)
+        if id.hasPrefix("file.") || base.schemas[id] != nil || base.displayNames[id] != nil { return id }
+        guard let key = Self.noteKey(id) else { return nil }
+        if propertyTypes()[key] != nil || notes.contains(where: { $0.properties[key] != nil }) { return id }
+        return nil
+    }
+
+    /// そのビューの `order` の末尾に列を足す。新しいプロパティなら、型を `.base` の `properties:`（Ma の型）か
+    /// `.obsidian/types.json`（Obsidian の型）に書く。ノートには書かない（値を入れたときに書く）
+    private func addProperty(named name: String, kind: BasePropertyAdder.Kind) {
+        // 列の幅の保存を待っていたら先に書く（あとから古い列の並びで書き戻さないように）
+        if saveColumnsTask != nil {
+            saveColumnsTask?.cancel()
+            saveColumnsTask = nil
+            saveColumns()
+        }
+        guard let url, let base, base.views.indices.contains(selectedView) else { return }
+        let view = base.views[selectedView]
+        let existing = existingProperty(named: name, base: base)
+        let id = existing ?? BaseExpression.propertyID(name)
+        let order = view.order.isEmpty ? ["file.name"] : view.order
+        guard !order.contains(id) else {
+            // もう列にあるなら、その列を見せるだけにする
+            if let index = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == id }) { tableView.scrollColumnToVisible(index) }
+            return
+        }
+        let rawOrder = view.order.isEmpty ? ["file.name"] : view.rawOrder
+        do {
+            var text = try String(contentsOf: url, encoding: .utf8)
+            if existing == nil, let schemaKind = kind.schemaKind {
+                guard let updated = BaseFile.addingProperty(text, id: id, kind: schemaKind) else {
+                    return showError("プロパティを追加できません", ".base の書き方が想定と違うため、ファイルを変更しませんでした。")
+                }
+                text = updated
+            }
+            guard let updated = BaseFile.updatingColumns(text, view: selectedView, order: rawOrder + [BaseFile.rawName(id)], columnSize: [:]) else {
+                return showError("プロパティを追加できません", ".base の書き方が想定と違うため、ファイルを変更しませんでした。")
+            }
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+            self.base = try BaseFile(yaml: updated)
+        } catch {
+            return showError("プロパティを追加できません", "\(error)")
+        }
+        if existing == nil, let type = kind.obsidianType, let key = Self.noteKey(id) { onSetPropertyType?(key, type) }
+        rebuild()
+        if let index = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == id }) { tableView.scrollColumnToVisible(index) }
     }
 
     // MARK: - グループ化の設定
@@ -665,7 +761,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         alert.addButton(withTitle: "削除")
         alert.addButton(withTitle: "キャンセル")
         alert.buttons[0].hasDestructiveAction = true
-        alert.beginSheetModal(for: window) { [weak self] response in
+        present(alert, in: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             self?.removeProperty(property)
         }
@@ -696,7 +792,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         let alert = NSAlert()
         alert.messageText = message
         alert.informativeText = info
-        if let window = view.window { alert.beginSheetModal(for: window) } else { alert.runModal() }
+        if let window = view.window { present(alert, in: window) { _ in } } else { alert.runModal() }
     }
 
     // MARK: - 表
@@ -764,6 +860,19 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             content = stack
         case .header:
             guard let property = tableColumn?.identifier.rawValue else { return nil }
+            if tableColumn?.identifier == BaseTableView.addColumnID {
+                let image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil) ?? NSImage()
+                let button = ClosureButton(image: image.withSymbolConfiguration(.init(pointSize: 11, weight: .regular)) ?? image) {}
+                button.onPress = { [weak self, weak button] in
+                    guard let button else { return }
+                    self?.showPropertyAdder(relativeTo: button.bounds, of: button)
+                }
+                button.contentTintColor = .secondaryLabelColor
+                button.toolTip = "プロパティを追加"
+                button.setAccessibilityLabel("プロパティを追加")
+                content = button
+                break
+            }
             let icon = NSImageView(image: NSImage(systemSymbolName: symbolName(of: property), accessibilityDescription: nil) ?? NSImage())
             icon.symbolConfiguration = .init(pointSize: 11, weight: .regular)
             icon.contentTintColor = .tertiaryLabelColor
@@ -777,7 +886,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             stack.spacing = 5
             content = stack
         case .note(let note):
-            guard let property = tableColumn?.identifier.rawValue else { return nil }
+            guard let property = tableColumn?.identifier.rawValue, tableColumn?.identifier != BaseTableView.addColumnID else { return nil }
             let value = NoteContext(note: note, types: propertyTypes(), schemas: schemas).value(of: property)
             if property == "file.name" || property == "file.basename" {
                 let link = LinkLabel(labelWithString: note.basename)
@@ -915,7 +1024,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
 
 /// 押したらクロージャを呼ぶ、枠のないボタン
 private final class ClosureButton: NSButton {
-    private let onPress: () -> Void
+    var onPress: () -> Void
 
     init(image: NSImage, onPress: @escaping () -> Void) {
         self.onPress = onPress
@@ -962,6 +1071,8 @@ private final class BaseTableView: NSTableView {
     var isHeaderRow: (Int) -> Bool = { _ in false }
     /// グループごとの列の見出しの行を右クリックしたときのメニュー
     var menuForHeaderColumn: (Int) -> NSMenu? = { _ in nil }
+    /// 右端の「＋」の列。幅を変えず、入れ替えもしない
+    static let addColumnID = NSUserInterfaceItemIdentifier("ma.addProperty")
 
     private static let grabWidth: CGFloat = 4
 
@@ -971,7 +1082,8 @@ private final class BaseTableView: NSTableView {
         guard row >= 0, isHeaderRow(row) else { return super.mouseDown(with: event) }
         if let column = resizableColumn(at: point) {
             trackResize(of: tableColumns[column], from: point)
-        } else if case let column = self.column(at: point), column >= 0, allowsColumnReordering {
+        } else if case let column = self.column(at: point), column >= 0, allowsColumnReordering,
+                  tableColumns[column].identifier != Self.addColumnID {
             trackMove(of: column)
         }
     }
@@ -985,7 +1097,7 @@ private final class BaseTableView: NSTableView {
 
     /// 境界の左の列（右端が point の近くにある列）
     private func resizableColumn(at point: NSPoint) -> Int? {
-        tableColumns.indices.first { abs(rect(ofColumn: $0).maxX - point.x) <= Self.grabWidth }
+        tableColumns.indices.first { tableColumns[$0].identifier != Self.addColumnID && abs(rect(ofColumn: $0).maxX - point.x) <= Self.grabWidth }
     }
 
     private func trackResize(of column: NSTableColumn, from start: NSPoint) {
@@ -1005,7 +1117,7 @@ private final class BaseTableView: NSTableView {
         while let event = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]), event.type == .leftMouseDragged {
             autoscroll(with: event)
             let target = column(at: convert(event.locationInWindow, from: nil))
-            guard target >= 0, target != current else { continue }
+            guard target >= 0, target != current, tableColumns[target].identifier != Self.addColumnID else { continue }
             moveColumn(current, toColumn: target)
             current = target
         }
@@ -1017,7 +1129,7 @@ private final class BaseTableView: NSTableView {
         let visible = rows(in: visibleRect)
         for row in visible.lowerBound..<visible.upperBound where isHeaderRow(row) {
             let rowRect = rect(ofRow: row)
-            for column in tableColumns.indices {
+            for column in tableColumns.indices where tableColumns[column].identifier != Self.addColumnID {
                 let x = rect(ofColumn: column).maxX
                 addCursorRect(NSRect(x: x - Self.grabWidth, y: rowRect.minY, width: Self.grabWidth * 2, height: rowRect.height), cursor: .resizeLeftRight)
             }
