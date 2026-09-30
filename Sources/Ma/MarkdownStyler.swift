@@ -57,13 +57,14 @@ struct MarkdownStyler {
     /// `draggedWidths` は列幅をドラッグ中の表の幅。区切り行の位置で表を特定し、区切り行から読んだ幅の代わりに使う。
     /// `frontmatter` の範囲は文字を隠し、最初の行の高さを `height` にして、そこにプロパティ欄を重ねられるようにする。
     /// `calloutIcons` が false ならコールアウトのタイトルの左のアイコンを描かない。
-    /// `expandedCallouts` は開閉の印で開いた `[!note]-` の見出し行の先頭で、カーソルが外にあってもたたまない
+    /// `expandedCallouts` は開閉の印で開いた `[!note]-` の見出し行の先頭で、カーソルが外にあってもたたまない。
+    /// `collapsedLists` はたたんで見せるトグル。子の行を高さのない行にして隠し、最初の行に ▸ を描かせる
     @discardableResult
     func apply(
         to storage: NSTextStorage, activeRange: NSRange, availableWidth: CGFloat, sourceMode: Bool,
         draggedWidths: (separator: Int, widths: [CGFloat])? = nil,
         frontmatter: (range: NSRange, height: CGFloat)? = nil,
-        calloutIcons: Bool = true, expandedCallouts: Set<Int> = []
+        calloutIcons: Bool = true, expandedCallouts: Set<Int> = [], collapsedLists: [ListToggle] = []
     ) -> [TableLayout] {
         let text = storage.string
         let string = text as NSString
@@ -98,10 +99,18 @@ struct MarkdownStyler {
             }
             index = hidden.count
         }
+        var foldedLines = IndexSet()
+        for toggle in collapsedLists { foldedLines.insert(integersIn: toggle.hidden.location..<NSMaxRange(toggle.hidden)) }
+        let foldStarts = Dictionary(collapsedLists.map { ($0.start, $0) }, uniquingKeysWith: { first, _ in first })
         while index < lines.count {
             let line = lines[index]
             let active = isActive(line.full)
 
+            if foldedLines.contains(line.full.location) {
+                hideFoldedLine(line, in: storage)
+                index += 1
+                continue
+            }
             if let end = embedEnd(from: index, in: lines, text: text),
                !isActive(line.full.union(lines[end].full)),
                styleEmbed(Array(lines[index...end]), text: text, in: storage) {
@@ -143,9 +152,22 @@ struct MarkdownStyler {
             }
             styleBlock(text, line: line.content, in: storage, active: active)
             styleInline(text, line: line.content, in: storage, active: active)
+            if let toggle = foldStarts[line.full.location] {
+                storage.addAttribute(.maBlock, value: ListFoldDecoration(indentLength: toggle.indentLength), range: line.full)
+            }
             index += 1
         }
         return tables
+    }
+
+    /// たたんだトグルの子の行。文字を隠し、高さと前後の余白をなくす
+    private func hideFoldedLine(_ line: Line, in storage: NSTextStorage) {
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = 0.01
+        style.maximumLineHeight = 0.01
+        style.lineSpacing = 0
+        style.paragraphSpacing = 0
+        storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear, .paragraphStyle: style], range: line.full)
     }
 
     // MARK: - コードブロック
