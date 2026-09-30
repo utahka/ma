@@ -11,6 +11,8 @@ extension NSAttributedString.Key {
     static let maWikiLink = NSAttributedString.Key("ma.wikiLink")
     /// `[表示名](URL)` 全体に付ける。値は URL の文字列
     static let maURL = NSAttributedString.Key("ma.url")
+    /// AI へのコメントを付けた文字に付ける。値はコメント本文。カーソル行（記号が見えている状態）では付けない
+    static let maAIComment = NSAttributedString.Key("ma.aiComment")
 }
 
 /// 文字の代わりに、その文字の位置の中央へ描く記号

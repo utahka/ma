@@ -53,6 +53,7 @@ final class EditorTextView: NSTextView {
     private let addRowButton = NSButton()
     private var hoveredTable: TableLayout?
     private lazy var blockDrag = BlockDragController(textView: self)
+    private let commentPopover = AICommentPopover()
     let propertiesView = PropertiesView()
 
     // init を上書きすると init(usingTextLayoutManager:) が継承されなくなるので、配置された時点で準備する
@@ -94,7 +95,10 @@ final class EditorTextView: NSTextView {
 
     // ノートを切り替えたときも、ブロックの読み直しが要る
     override var string: String {
-        didSet { blockDrag.textDidChange() }
+        didSet {
+            blockDrag.textDidChange()
+            closeCommentPopover()
+        }
     }
 
     /// リンクをクリックしたとき。⌘クリックなら `newTab` が true
@@ -132,6 +136,28 @@ final class EditorTextView: NSTextView {
         super.didChangeText()
         hideAddRowButton()
         blockDrag.textDidChange()
+        closeCommentPopover()
+    }
+
+    // カーソルが入るとその行は記号とコメントがそのまま見えるので、吹き出しは閉じる
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        closeCommentPopover()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        closeCommentPopover()
+        super.keyDown(with: event)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        closeCommentPopover()
+        super.scrollWheel(with: event)
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        closeCommentPopover()
     }
 
     override func updateTrackingAreas() {
@@ -149,6 +175,7 @@ final class EditorTextView: NSTextView {
         let point = convert(event.locationInWindow, from: nil)
         updateAddRowButton(at: point)
         blockDrag.hover(at: point)
+        updateCommentPopover(at: point)
         if blockDrag.isOnHandle(point) {
             NSCursor.openHand.set()
         } else if columnEdge(at: point) != nil {
@@ -162,9 +189,11 @@ final class EditorTextView: NSTextView {
         super.mouseExited(with: event)
         hideAddRowButton()
         blockDrag.hideHandle()
+        closeCommentPopover()
     }
 
     override func mouseDown(with event: NSEvent) {
+        closeCommentPopover()
         let point = convert(event.locationInWindow, from: nil)
         if let (range, checked) = checkbox(at: point) {
             // カーソルを動かさずにチェックを切り替える
@@ -341,6 +370,21 @@ final class EditorTextView: NSTextView {
         return nil
     }
 
+    /// マウス位置の文字に AI へのコメントがあれば、コメントと付けた文字の範囲、マウスの下の矩形を返す。
+    /// カーソル行では Styler が属性を付けないので見つからない
+    private func aiComment(at point: NSPoint) -> (comment: String, range: NSRange, rect: CGRect)? {
+        guard let storage = textStorage, storage.length > 0 else { return nil }
+        let index = characterIndexForInsertion(at: point)
+        for candidate in [index, index - 1] where 0 <= candidate && candidate < storage.length {
+            var range = NSRange()
+            guard let comment = storage.attribute(.maAIComment, at: candidate, effectiveRange: &range) as? String,
+                  let rect = segmentRects(for: range).first(where: { $0.contains(point) })
+            else { continue }
+            return (comment, range, rect)
+        }
+        return nil
+    }
+
     /// 文書内の範囲が描かれている矩形（ビューの座標）
     private func segmentRects(for range: NSRange) -> [CGRect] {
         guard let layoutManager = textLayoutManager, let content = layoutManager.textContentManager,
@@ -354,6 +398,19 @@ final class EditorTextView: NSTextView {
             return true
         }
         return rects
+    }
+
+    // MARK: - AI へのコメントの吹き出し
+
+    /// AI へのコメントを付けた文字の上にマウスがあるあいだ、コメントを吹き出しで出す
+    private func updateCommentPopover(at point: NSPoint) {
+        guard columnDrag == nil, window?.isKeyWindow == true, let hit = aiComment(at: point) else { return closeCommentPopover() }
+        commentPopover.show(hit.comment, for: hit.range, relativeTo: hit.rect, of: self)
+    }
+
+    /// 入力・スクロール・クリック・ウインドウの切り替えなどで、吹き出しが残らないように閉じる
+    @objc func closeCommentPopover() {
+        commentPopover.close()
     }
 
     // MARK: - 行の追加ボタン
@@ -483,6 +540,11 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(closeSlashMenu),
                                                name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(closeSlashMenu),
+                                               name: NSWindow.didResignKeyNotification, object: nil)
+        // AI へのコメントの吹き出しも、スクロールやウインドウの切り替えで文字から離れるので閉じる
+        NotificationCenter.default.addObserver(textView, selector: #selector(EditorTextView.closeCommentPopover),
+                                               name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
+        NotificationCenter.default.addObserver(textView, selector: #selector(EditorTextView.closeCommentPopover),
                                                name: NSWindow.didResignKeyNotification, object: nil)
 
         // NSScrollView に直接載せたサブビューは制約どおりに置かれないので、入れ物のビューに並べる
