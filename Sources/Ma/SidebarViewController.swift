@@ -48,6 +48,16 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 4
+        // Obsidian のように、信号機ボタンのすぐ右にサイドバーを閉じるボタンを置く（閉じたあとはタブバーの同じ位置に開くボタンが出る）
+        let toggle = NSButton(image: Self.centeredSymbol("sidebar.left", label: "サイドバーを閉じる"),
+                              target: self, action: #selector(toggleSidebarClicked(_:)))
+        toggle.isBordered = false
+        toggle.refusesFirstResponder = true
+        toggle.contentTintColor = .secondaryLabelColor
+        toggle.widthAnchor.constraint(equalToConstant: TrafficLights.sidebarToggleWidth).isActive = true
+        toggle.toolTip = "サイドバーを閉じる"
+        buttons.addArrangedSubview(toggle)
+        buttons.setCustomSpacing(12, after: toggle)
         for (mode, symbol, label) in [(Mode.files, "folder", "ファイル"), (.bookmarks, "star", "お気に入り")] {
             let button = NSButton(image: Self.centeredSymbol(symbol, label: label), target: self, action: #selector(modeButtonClicked(_:)))
             // 選んでいる一覧は枠ではなく色で示す
@@ -103,7 +113,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         var constraints = [
             // 信号機ボタンの右に、タブの文字と同じ高さで並べる（上に余白を取る）
             buttons.centerYAnchor.constraint(equalTo: container.topAnchor, constant: TrafficLights.centerY),
-            buttons.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: TrafficLights.trailing + 15),
+            buttons.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: TrafficLights.sidebarToggleLeading),
             separator.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
             separator.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
             calendarView.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: padding / 2),
@@ -131,7 +141,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     /// SF Symbols の画像は文字に並べるための枠（alignmentRect）を持ち、NSButton はその枠を中央に置く。
     /// 枠と絵の中心のずれがアイコンごとに違い、フォルダとお気に入りで 1pt 高さがずれたので、
     /// 枠を持たない画像に描き直して絵の中心を信号機ボタンの中心に揃える
-    private static func centeredSymbol(_ name: String, label: String) -> NSImage {
+    static func centeredSymbol(_ name: String, label: String) -> NSImage {
         let symbol = NSImage(systemSymbolName: name, accessibilityDescription: label)!
             .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))!
         let image = NSImage(size: symbol.size, flipped: false) { rect in
@@ -152,6 +162,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
         updateEmptyLabel()
         select(currentURL)
+    }
+
+    /// 応答チェーンに任せると、ウィンドウがキーでないときに NSSplitViewController まで届かないので、親に直接送る
+    @objc private func toggleSidebarClicked(_ sender: NSButton) {
+        (parent as? NSSplitViewController)?.toggleSidebar(sender)
     }
 
     @objc private func modeButtonClicked(_ sender: NSButton) {

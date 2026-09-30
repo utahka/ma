@@ -16,6 +16,9 @@ final class TabBarView: NSView {
     var canGoForward = false { didSet { needsDisplay = true } }
     var onBack: (() -> Void)?
     var onForward: (() -> Void)?
+    /// サイドバーを閉じているときは、左端にサイドバーを開くボタンを出す
+    var showsSidebarButton = false { didSet { needsDisplay = true } }
+    var onToggleSidebar: (() -> Void)?
 
     private let maxTabWidth: CGFloat = 220
     private let minTabWidth: CGFloat = 60
@@ -24,7 +27,7 @@ final class TabBarView: NSView {
     private let buttonSize: CGFloat = 18
 
     private enum Target: Equatable {
-        case tab(Int), close(Int), newTab, back, forward
+        case tab(Int), close(Int), newTab, back, forward, sidebar
     }
     private var hovered: Target?
     private var pressed: Target?
@@ -53,8 +56,18 @@ final class TabBarView: NSView {
 
     private var midY: CGFloat { tabTop + (bounds.height - tabTop) / 2 }
 
+    /// サイドバーの閉じるボタンと同じ位置（フルスクリーンでは信号機ボタンがないので左端）に置く
+    private var sidebarRect: CGRect? {
+        guard showsSidebarButton else { return nil }
+        let width = TrafficLights.sidebarToggleWidth
+        let fullScreen = window?.styleMask.contains(.fullScreen) ?? false
+        let x = fullScreen ? 8 : max(8, TrafficLights.sidebarToggleLeading - convert(NSPoint.zero, to: nil).x)
+        return CGRect(x: x, y: midY - width / 2, width: width, height: width)
+    }
+
     private var backRect: CGRect {
-        CGRect(x: leadingInset, y: midY - buttonSize / 2, width: buttonSize, height: buttonSize)
+        let x = sidebarRect.map { $0.maxX + 8 } ?? leadingInset
+        return CGRect(x: x, y: midY - buttonSize / 2, width: buttonSize, height: buttonSize)
     }
 
     private var forwardRect: CGRect { backRect.offsetBy(dx: buttonSize + 4, dy: 0) }
@@ -91,6 +104,7 @@ final class TabBarView: NSView {
 
     private func target(at point: NSPoint) -> Target? {
         if newTabRect.contains(point) { return .newTab }
+        if sidebarRect?.contains(point) == true { return .sidebar }
         if backRect.contains(point) { return .back }
         if forwardRect.contains(point) { return .forward }
         for index in titles.indices where tabRect(index).contains(point) {
@@ -112,6 +126,7 @@ final class TabBarView: NSView {
         if titles.indices.contains(selectedIndex), selectedIndex != drag?.index { drawTab(selectedIndex) }
         if let drag { drawTab(drag.index) }
         drawButton(in: newTabRect, highlighted: hovered == .newTab, symbol: "plus")
+        if let sidebarRect { drawSidebarButton(in: sidebarRect, highlighted: hovered == .sidebar) }
         drawButton(in: backRect, highlighted: canGoBack && hovered == .back, symbol: "chevron.left", enabled: canGoBack)
         drawButton(in: forwardRect, highlighted: canGoForward && hovered == .forward, symbol: "chevron.right", enabled: canGoForward)
     }
@@ -186,6 +201,24 @@ final class TabBarView: NSView {
         image.draw(in: CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height))
     }
 
+    /// サイドバーのボタンと同じ、枠を持たない template 画像を同じ色で描き、縦の位置と見た目を揃える
+    private func drawSidebarButton(in rect: CGRect, highlighted: Bool) {
+        if highlighted {
+            NSColor.labelColor.withAlphaComponent(0.1).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+        }
+        let symbol = SidebarViewController.centeredSymbol("sidebar.left", label: "サイドバーを開く")
+        let size = symbol.size
+        let tinted = NSImage(size: size, flipped: false) { bounds in
+            // 色で塗ってから絵の形に切り抜く（絵の上から塗ると、半透明の色に下の黒が透けて濃くなる）
+            NSColor.secondaryLabelColor.setFill()
+            bounds.fill()
+            symbol.draw(in: bounds, from: .zero, operation: .destinationIn, fraction: 1)
+            return true
+        }
+        tinted.draw(in: CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height))
+    }
+
     // MARK: - マウス
 
     override func updateTrackingAreas() {
@@ -211,6 +244,7 @@ final class TabBarView: NSView {
         needsDisplay = true
         switch target {
         case .tab(let index)?: toolTip = titles[index]
+        case .sidebar?: toolTip = "サイドバーを開く"
         case .back?: toolTip = "戻る"
         case .forward?: toolTip = "進む"
         default: toolTip = nil
@@ -260,6 +294,7 @@ final class TabBarView: NSView {
             switch pressed {
             case .close(let index): onClose?(index)
             case .newTab: onNewTab?()
+            case .sidebar: onToggleSidebar?()
             case .back: if canGoBack { onBack?() }
             case .forward: if canGoForward { onForward?() }
             case .tab: break
