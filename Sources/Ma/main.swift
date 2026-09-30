@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let vault = Vault()
     private let sidebar = SidebarViewController()
     private let editor = EditorAreaViewController()
+    private let quickOpen = QuickOpenPanel()
     private var window: NSWindow!
     private var sidebarCollapsedObservation: NSKeyValueObservation?
     private static let sidebarCollapsedKey = "sidebarCollapsed"
@@ -109,6 +110,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             calendar.hasNote = vault.dailyNotes.map { notes in { notes.exists(for: $0) } }
         }
         vault.onLoad = { [unowned self] tab, document in editor.show(document, in: tab) }
+        vault.resolveSaveConflict = { url in
+            let alert = NSAlert()
+            alert.messageText = "ファイルが外部で変更されています"
+            alert.informativeText = "「\(url.lastPathComponent)」には Ma の未保存の編集もあります。残す内容を選んでください。"
+            alert.addButton(withTitle: "外部の変更を読み込む")
+            alert.addButton(withTitle: "Ma の内容で上書き")
+            return alert.runModal() == .alertSecondButtonReturn
+        }
+        vault.onExternalChange = { [unowned self] in
+            editor.notesDidChange()
+            updateNoteHeader()
+        }
         vault.onTabsChange = { [unowned self] in
             editor.update(tabs: vault.tabs, activeIndex: vault.activeIndex,
                           canGoBack: vault.canGoBack, canGoForward: vault.canGoForward)
@@ -139,9 +152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             MainActor.assumeIsolated { button == 3 ? vault.goBack() : vault.goForward() }
             return nil
         }
-        // Obsidian で変えたブックマークを反映する
+        // Obsidian などで変えたノート・プロパティ型・ブックマークを反映する
         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) {
-            [vault] _ in MainActor.assumeIsolated { vault.reloadBookmarks() }
+            [vault] _ in MainActor.assumeIsolated { vault.refreshExternalChanges() }
         }
 
         // `swift run` で起動したとき（.app の外）も通常のアプリとして前面に出す。
@@ -296,6 +309,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func openFolder(_ sender: Any?) { vault.chooseFolder() }
+    @objc func showFileSearch(_ sender: Any?) {
+        guard let root = vault.root else { return }
+        quickOpen.show(files: FileNode.files(in: vault.tree), root: root, from: window) { [vault] url, newTab in
+            vault.open(url, newTab: newTab)
+        }
+    }
     @objc func save(_ sender: Any?) { vault.saveNow() }
     @objc func newTab(_ sender: Any?) { vault.newTab() }
     /// 何も開いていないタブが1つだけなら、ウィンドウを閉じる
@@ -329,6 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let file = NSMenu(title: "ファイル")
         file.addItem(withTitle: "新規タブ", action: #selector(newTab(_:)), keyEquivalent: "t")
         file.addItem(withTitle: "フォルダを開く…", action: #selector(openFolder(_:)), keyEquivalent: "o")
+        file.addItem(withTitle: "ファイルを検索…", action: #selector(showFileSearch(_:)), keyEquivalent: "p")
         file.addItem(withTitle: "保存", action: #selector(save(_:)), keyEquivalent: "s")
         file.addItem(withTitle: "今日のデイリーノート", action: #selector(openTodayNote(_:)), keyEquivalent: "d")
         file.addItem(withTitle: "お気に入りに追加", action: #selector(toggleBookmark(_:)), keyEquivalent: "B")
@@ -347,6 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         edit.addItem(withTitle: "すべてを選択", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         edit.addItem(.separator())
         edit.addItem(withTitle: "プロパティを追加", action: #selector(EditorAreaViewController.addProperty(_:)), keyEquivalent: ";")
+        edit.addItem(withTitle: "AI へのコメントを追加…", action: #selector(EditorAreaViewController.addAIComment(_:)), keyEquivalent: "M")
         edit.addItem(.separator())
         let find = edit.addItem(withTitle: "検索…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
         find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)

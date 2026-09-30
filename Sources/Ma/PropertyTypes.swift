@@ -46,6 +46,7 @@ enum PropertyType: String, CaseIterable {
 final class PropertyTypes {
     private let url: URL
     private var types: [String: PropertyType] = [:]
+    private var loadedData: Data?
 
     init(root: URL) {
         url = root.appendingPathComponent(".obsidian/types.json")
@@ -55,12 +56,17 @@ final class PropertyTypes {
     /// `types.json` に書かれている型（推測した型は含まない）
     var recorded: [String: PropertyType] { types }
 
-    func reload() {
-        guard let data = try? Data(contentsOf: url),
+    @discardableResult
+    func reload() -> Bool {
+        let data = try? Data(contentsOf: url)
+        guard data != loadedData else { return false }
+        loadedData = data
+        guard let data,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let map = json["types"] as? [String: String]
-        else { types = [:]; return }
+        else { types = [:]; return true }
         types = map.compactMapValues(PropertyType.init(rawValue:))
+        return true
     }
 
     /// 型が決まっていないキーは、値の形から推測する
@@ -81,6 +87,8 @@ final class PropertyTypes {
 
     /// 型を記録する。Obsidian が書く形（2字下げ・並びは既存のまま）を崩さないよう、該当する行だけを書き換える
     func set(_ type: PropertyType, for key: String) {
+        // Obsidian などが先に書き換えていた場合、その内容を土台にして更新する
+        reload()
         guard types[key] != type else { return }
         types[key] = type
         let entry = "\(Self.json(key)): \(Self.json(type.rawValue))"
@@ -99,6 +107,7 @@ final class PropertyTypes {
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try text.write(to: url, atomically: true, encoding: .utf8)
+            loadedData = try? Data(contentsOf: url)
         } catch {
             NSLog("プロパティの型の保存に失敗: \(url.path): \(error)")
         }

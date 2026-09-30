@@ -20,7 +20,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     private var contents: [Tab.ID: NSViewController] = [:]
     private weak var shown: NSViewController?
     private let favoriteButton = NSButton()
-    private let pathLabel = PassthroughLabel(labelWithString: "")
+    private let pathLabel = CopyablePathLabel(labelWithString: "")
 
     private static let sourceModeKey = "sourceMode"
     /// ソース表示（装飾なし）かどうか。⌘E で全タブまとめて切り替え、次回の起動にも引き継ぐ
@@ -66,6 +66,11 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         pathLabel.lineBreakMode = .byTruncatingHead
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
         pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        pathLabel.onCopy = { [weak pathLabel] in
+            guard let path = pathLabel?.path else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(path, forType: .string)
+        }
         container.addSubview(pathLabel)
         NSLayoutConstraint.activate([
             // ☆と縦の中心を揃え、左端も☆の右端と同じだけ内側に置く
@@ -92,6 +97,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     /// 左上に vault からの相対パスを出す（Obsidian のパンくずに近い見た目）。フォルダ部分は薄くし、拡張子は省く。nil で隠す
     func setNotePath(_ path: String?) {
         pathLabel.isHidden = path == nil
+        pathLabel.path = path
         guard let path else { return }
         let name = (path as NSString).lastPathComponent
         // 区切りの両脇を空けて読みやすくする（`Tasks / Tickets / ノート名`）
@@ -101,7 +107,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         text.append(NSAttributedString(string: (name as NSString).deletingPathExtension,
                                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
         pathLabel.attributedStringValue = text
-        pathLabel.toolTip = path
+        pathLabel.toolTip = "クリックしてコピー: \(path)"
     }
 
     @objc private func favoriteClicked(_ sender: NSButton) { onToggleFavorite?() }
@@ -224,6 +230,8 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
 
     @objc func addProperty(_ sender: Any?) { (shown as? EditorViewController)?.addProperty() }
 
+    @objc func addAIComment(_ sender: Any?) { (shown as? EditorViewController)?.addAIComment() }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSourceMode(_:)) {
             menuItem.state = sourceMode ? .on : .off
@@ -232,11 +240,19 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
             menuItem.state = showsCalloutIcons ? .on : .off
         }
         if menuItem.action == #selector(addProperty(_:)) { return shown is EditorViewController }
+        if menuItem.action == #selector(addAIComment(_:)) { return shown is EditorViewController }
         return true
     }
 }
 
-/// 本文の上に重ねる表示だけのラベル。クリックは下の本文に通す
-private final class PassthroughLabel: NSTextField {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+/// クリックすると表示中の vault 相対パスをコピーするラベル
+private final class CopyablePathLabel: NSTextField {
+    var path: String?
+    var onCopy: (() -> Void)?
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func mouseDown(with event: NSEvent) { onCopy?() }
 }

@@ -78,8 +78,14 @@ final class Vault {
     var onBookmarksChange: (() -> Void)?
     /// タブで開いているノートの今の表示位置。別のノートに切り替える前に履歴へ残す
     var viewState: ((Tab.ID) -> NoteViewState?)?
+    /// 外部変更と未保存の編集がぶつかったときに、自分の編集で上書きするなら true
+    var resolveSaveConflict: ((URL) -> Bool)?
+    /// ノートやプロパティ型が外部で変わったとき
+    var onExternalChange: (() -> Void)?
 
     private var pendingTexts: [URL: String] = [:]
+    /// 最後に読み込み、または保存したディスク上の本文。外部変更との競合判定に使う
+    private var diskTexts: [URL: String] = [:]
     private var saveTask: Task<Void, Never>?
     /// 中身を読み込み済みのタブ。復元したタブは選ばれたときに読む
     private var loadedTabs: Set<Tab.ID> = []
@@ -133,6 +139,8 @@ final class Vault {
         tabs = [Tab()]
         activeIndex = 0
         loadedTabs = []
+        diskTexts = [:]
+        pendingTexts = [:]
         bookmarks = []
         bookmarksLoaded = false
         onTreeChange?()
@@ -347,8 +355,10 @@ final class Vault {
 
     func selectTab(at index: Int) {
         guard tabs.indices.contains(index), index != activeIndex else { return }
+        saveNow()
         activeIndex = index
         tabsDidChange()
+        refreshExternalChanges()
     }
 
     /// 閉じたのが選択中のタブなら右隣（右端なら左隣）を選ぶ。最後の1つを閉じたら空のタブを残す
@@ -378,6 +388,7 @@ final class Vault {
             if let url = tab.url {
                 do {
                     let text = try String(contentsOf: url, encoding: .utf8)
+                    diskTexts[url] = text
                     onLoad?(tab.id, OpenDocument(url: url, text: text, viewState: restoringViewStates.removeValue(forKey: tab.id)))
                 } catch {
                     NSLog("読み込みに失敗: \(url.path): \(error)")
@@ -443,13 +454,45 @@ final class Vault {
         saveTask?.cancel()
         saveTask = nil
         for (url, text) in pendingTexts {
+            let current = try? String(contentsOf: url, encoding: .utf8)
+            if let known = diskTexts[url], current != known, current != text,
+               resolveSaveConflict?(url) != true {
+                if let current {
+                    diskTexts[url] = current
+                    if let tab = tabs.first(where: { $0.url?.path == url.path }) {
+                        onLoad?(tab.id, OpenDocument(url: url, text: current, viewState: viewState?(tab.id)))
+                    }
+                }
+                continue
+            }
             do {
                 try text.write(to: url, atomically: true, encoding: .utf8)
+                diskTexts[url] = text
             } catch {
                 NSLog("保存に失敗: \(url.path): \(error)")
             }
         }
         pendingTexts = [:]
+    }
+
+    /// アプリが前面に戻ったときやタブを切り替えたとき、外部で変わったファイルとプロパティ型を読み直す
+    func refreshExternalChanges() {
+        var changed = propertyTypes?.reload() == true
+        for tab in tabs where loadedTabs.contains(tab.id) {
+            guard let url = tab.url, pendingTexts[url] == nil,
+                  let text = try? String(contentsOf: url, encoding: .utf8), text != diskTexts[url]
+            else { continue }
+            diskTexts[url] = text
+            changed = true
+            if tab.id == activeTab.id {
+                onLoad?(tab.id, OpenDocument(url: url, text: text, viewState: viewState?(tab.id)))
+            } else {
+                loadedTabs.remove(tab.id)
+            }
+        }
+        rescan()
+        reloadBookmarks()
+        if changed { onExternalChange?() }
     }
 
     /// タブで開いていないノートのプロパティを、ファイルを直接書き換えて設定する
