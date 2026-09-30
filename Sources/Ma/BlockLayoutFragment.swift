@@ -7,6 +7,10 @@ extension NSAttributedString.Key {
     static let maCheckbox = NSAttributedString.Key("ma.checkbox")
     /// 文字を透明にして、代わりに描く記号（箇条書きの中黒や <br> の ↵）
     static let maReplacement = NSAttributedString.Key("ma.replacement")
+    /// `[[ノート名]]` 全体に付ける。値はリンク先のノート名（`#見出し` や `|表示名` を含まない）
+    static let maWikiLink = NSAttributedString.Key("ma.wikiLink")
+    /// `[表示名](URL)` 全体に付ける。値は URL の文字列
+    static let maURL = NSAttributedString.Key("ma.url")
 }
 
 /// 文字の代わりに、その文字の位置の中央へ描く記号

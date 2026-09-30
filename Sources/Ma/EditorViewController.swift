@@ -1,7 +1,15 @@
 import AppKit
 
+/// 本文中のリンクの行き先
+enum LinkTarget {
+    /// `[[ノート名]]`
+    case note(String)
+    /// `[表示名](URL)`
+    case url(String)
+}
+
 /// 本文を最大幅に収め、ウィンドウが広いときは中央に寄せる。
-/// 表の列幅のドラッグ、行の追加ボタン、チェックボックスのクリックを受け持つ
+/// 表の列幅のドラッグ、行の追加ボタン、チェックボックスとリンクのクリックを受け持つ
 final class EditorTextView: NSTextView {
     private let maxTextWidth: CGFloat = 760
 
@@ -39,6 +47,9 @@ final class EditorTextView: NSTextView {
     override var string: String {
         didSet { blockDrag.textDidChange() }
     }
+
+    /// リンクをクリックしたとき。⌘クリックなら `newTab` が true
+    var onOpenLink: ((LinkTarget, _ newTab: Bool) -> Void)?
 
     /// 本文の幅が変わったとき。表の列幅（収まらないときの縮小）を計算し直すのに使う
     var onTextWidthChange: (() -> Void)?
@@ -80,7 +91,7 @@ final class EditorTextView: NSTextView {
         blockDrag.hover(at: point)
         if columnEdge(at: point) != nil {
             NSCursor.resizeLeftRight.set()
-        } else if checkbox(at: point) != nil {
+        } else if checkbox(at: point) != nil || link(at: point) != nil {
             NSCursor.pointingHand.set()
         }
     }
@@ -97,6 +108,10 @@ final class EditorTextView: NSTextView {
             // カーソルを動かさずにチェックを切り替える
             replace(NSRange(location: range.location + 1, length: 1), with: checked ? " " : "x",
                     actionName: checked ? "チェックを外す" : "チェック")
+            return
+        }
+        if let link = link(at: point) {
+            onOpenLink?(link, event.modifierFlags.contains(.command))
             return
         }
         guard let hit = columnEdge(at: point) else { return super.mouseDown(with: event) }
@@ -194,6 +209,43 @@ final class EditorTextView: NSTextView {
         return (NSRange(location: paragraphStart + hit.range.location, length: hit.range.length), hit.checked)
     }
 
+    /// マウス位置の文字にリンクがあれば返す。カーソルがリンクの中にあるあいだは編集中とみなし、クリックでは開かない
+    private func link(at point: NSPoint) -> LinkTarget? {
+        guard let storage = textStorage, storage.length > 0 else { return nil }
+        let index = characterIndexForInsertion(at: point)
+        // 挿入位置は文字の境目なので、左右どちらの文字の上にあるかは矩形で確かめる
+        for candidate in [index, index - 1] where 0 <= candidate && candidate < storage.length {
+            var range = NSRange()
+            let target: LinkTarget
+            if let name = storage.attribute(.maWikiLink, at: candidate, effectiveRange: &range) as? String {
+                target = .note(name)
+            } else if let url = storage.attribute(.maURL, at: candidate, effectiveRange: &range) as? String {
+                target = .url(url)
+            } else {
+                continue
+            }
+            let selection = selectedRange()
+            if range.location <= selection.location && NSMaxRange(selection) <= NSMaxRange(range) { return nil }
+            if segmentRects(for: range).contains(where: { $0.contains(point) }) { return target }
+        }
+        return nil
+    }
+
+    /// 文書内の範囲が描かれている矩形（ビューの座標）
+    private func segmentRects(for range: NSRange) -> [CGRect] {
+        guard let layoutManager = textLayoutManager, let content = layoutManager.textContentManager,
+              let start = content.location(content.documentRange.location, offsetBy: range.location),
+              let end = content.location(start, offsetBy: range.length),
+              let textRange = NSTextRange(location: start, end: end)
+        else { return [] }
+        var rects: [CGRect] = []
+        layoutManager.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, frame, _, _ in
+            rects.append(frame.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y))
+            return true
+        }
+        return rects
+    }
+
     // MARK: - 行の追加ボタン
 
     /// 表の上にマウスがあるあいだ、表の下端の中央にボタンを出す
@@ -233,6 +285,10 @@ final class EditorTextView: NSTextView {
 final class EditorViewController: NSViewController, NSTextViewDelegate {
     var onChange: ((URL, String) -> Void)?
     private(set) var url: URL?
+    var onOpenLink: ((LinkTarget, _ newTab: Bool) -> Void)? {
+        get { textView.onOpenLink }
+        set { textView.onOpenLink = newValue }
+    }
 
     private let textView = EditorTextView(usingTextLayoutManager: true)
     private let placeholder = NSTextField(labelWithString: "ノートを選択してください")

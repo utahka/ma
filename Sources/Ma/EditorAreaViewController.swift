@@ -4,6 +4,7 @@ import AppKit
 final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     let tabBar = TabBarView()
     var onChange: ((URL, String) -> Void)?
+    var onOpenLink: ((LinkTarget, _ newTab: Bool) -> Void)?
 
     private let content = NSView()
     private var editors: [Tab.ID: EditorViewController] = [:]
@@ -63,6 +64,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         editor.loadViewIfNeeded()
         editor.sourceMode = sourceMode
         editor.onChange = { [weak self] url, text in self?.onChange?(url, text) }
+        editor.onOpenLink = { [weak self] target, newTab in self?.onOpenLink?(target, newTab) }
         addChild(editor)
         editors[tab] = editor
         return editor
