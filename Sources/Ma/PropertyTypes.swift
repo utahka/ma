@@ -32,6 +32,11 @@ enum PropertyType: String, CaseIterable {
         }
     }
 
+    /// 日付として読める値か（型が登録されていないプロパティを日付とみなすのに使う）
+    static func looksLikeDate(_ text: String) -> Bool {
+        text.range(of: #"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$"#, options: .regularExpression) != nil
+    }
+
     /// 選べる型。tags と aliases は Obsidian が決まったキーにだけ使う
     static let choosable: [PropertyType] = [.text, .multitext, .number, .checkbox, .date, .datetime]
 }
@@ -69,6 +74,7 @@ final class PropertyTypes {
         switch value {
         case .list?: return .multitext
         case .scalar(let text)? where ["true", "false"].contains(text): return .checkbox
+        case .scalar(let text)? where PropertyType.looksLikeDate(text): return text.count > 10 ? .datetime : .date
         default: return .text
         }
     }

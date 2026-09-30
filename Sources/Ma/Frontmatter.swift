@@ -88,6 +88,13 @@ struct Frontmatter: Equatable {
     /// 空のフロントマターを文書の先頭に足す
     static let emptyBlock = "---\n---\n"
 
+    /// 文書のプロパティの値を設定した文書を返す。フロントマターがなければ先頭に作る
+    static func setting(_ key: String, to value: PropertyValue, type: PropertyType, in text: String) -> String {
+        let text = parse(text) == nil ? emptyBlock + text : text
+        guard let edit = parse(text)?.setting(key, to: value, type: type) else { return text }
+        return (text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
+    }
+
     /// プロパティの値を設定する。なければ末尾に足す
     func setting(_ key: String, to value: PropertyValue, type: PropertyType) -> Edit {
         let lines = Self.encode(key: key, value: value, type: type)

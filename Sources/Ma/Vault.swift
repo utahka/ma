@@ -402,6 +402,17 @@ final class Vault {
         pendingTexts = [:]
     }
 
+    /// タブで開いていないノートのプロパティを、ファイルを直接書き換えて設定する
+    func setProperty(in url: URL, _ key: String, to value: PropertyValue, type: PropertyType) {
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let updated = Frontmatter.setting(key, to: value, type: type, in: text)
+            if updated != text { try updated.write(to: url, atomically: true, encoding: .utf8) }
+        } catch {
+            NSLog("プロパティの保存に失敗: \(url.path): \(error)")
+        }
+    }
+
     /// 読み込んだ `.base`。更新日時が変わるまで使い回す
     private var baseCache: [String: (modified: Date, base: BaseFile?)] = [:]
 

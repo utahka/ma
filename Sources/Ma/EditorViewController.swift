@@ -565,6 +565,16 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         restyle(force: true)
     }
 
+    /// `.base` の表から値を変えたとき。エディタの編集として書き換えるので ⌘Z で戻せる
+    func setProperty(_ key: String, to value: PropertyValue, type: PropertyType) {
+        if Frontmatter.parse(textView.string) == nil {
+            editingProperties = true
+            textView.replace(NSRange(location: 0, length: 0), with: Frontmatter.emptyBlock, actionName: "プロパティの変更")
+            editingProperties = false
+        }
+        editFrontmatter("プロパティの変更") { $0.setting(key, to: value, type: type) }
+    }
+
     /// ⌘; でプロパティを足す。フロントマターがなければ先頭に作る
     func addProperty() {
         guard url != nil else { return }

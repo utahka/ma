@@ -47,6 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         editor.loadNotes = { [vault] in await vault.noteRecords() }
         editor.propertySchemas = { [vault] url, text in vault.propertySchemas(for: url, text: text) }
         editor.onOpenNote = { [vault] url, newTab in vault.open(url, newTab: newTab) }
+        editor.onSetProperty = { [vault, editor] url, key, value, type in
+            // 開いているノートはエディタで書き換え（取り消せる）、開いていなければファイルを書き換える
+            if !editor.setProperty(in: url, key, to: value, type: type) {
+                vault.setProperty(in: url, key, to: value, type: type)
+            }
+            vault.saveNow()
+        }
         editor.tabBar.onSelect = { [vault] index in vault.selectTab(at: index) }
         editor.tabBar.onClose = { [vault] index in vault.closeTab(at: index) }
         editor.tabBar.onMove = { [vault] source, destination in vault.moveTab(from: source, to: destination) }

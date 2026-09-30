@@ -43,6 +43,8 @@ struct BaseFile {
         let name: String
         let filter: Filter?
         let order: [String]
+        /// `.base` に書かれたままの列名（`ステータス` など）。列の順番を書き戻すときに元の書き方を残す
+        let rawOrder: [String]
         let sort: [Sort]
         let groupBy: Sort?
         let columnSize: [String: CGFloat]
@@ -96,6 +98,7 @@ struct BaseFile {
                 name: view["name"] as? String ?? "ビュー \(index + 1)",
                 filter: view["filters"].map(Self.filter),
                 order: (view["order"] as? [Any] ?? []).map { BaseExpression.propertyID("\($0)") },
+                rawOrder: (view["order"] as? [Any] ?? []).map { "\($0)" },
                 sort: (view["sort"] as? [[String: Any]] ?? []).compactMap(Self.sort),
                 groupBy: (view["groupBy"] as? [String: Any]).flatMap(Self.sort),
                 columnSize: (view["columnSize"] as? [String: Any] ?? [:]).reduce(into: [:]) { sizes, item in
@@ -268,5 +271,103 @@ struct NoteContext: BaseContext {
         default:
             throw BaseError("対応していない関数: file.\(name)()")
         }
+    }
+}
+
+// MARK: - ビューの列の書き戻し
+
+extension BaseFile {
+    /// `views` の `index` 番目のビューの `order` と `columnSize` を書き換えた YAML を返す。
+    /// `columnSize` は変える列の幅（キーは列の ID）。書かれている幅は行の位置を変えずに値だけ差し替え、ない列は末尾に足す（表示していない列の幅も残す）。
+    /// YAML 全体を書き直すとリストの字下げなどが Obsidian の書き方と変わり、保存のたびに差分が出るので、
+    /// Obsidian が書く形（ブロック形式）を前提に、その2つのキーの行だけを差し替える。形が想定と違えば nil
+    static func updatingColumns(_ yaml: String, view index: Int, order: [String], columnSize: [String: Int]) -> String? {
+        var lines = yaml.components(separatedBy: "\n")
+        func indent(_ line: String) -> Int { line.prefix { $0 == " " }.count }
+        func isBlank(_ line: String) -> Bool { line.trimmingCharacters(in: .whitespaces).isEmpty }
+
+        guard let viewsLine = lines.firstIndex(of: "views:") else { return nil }
+        // ビューの項目の先頭（`  - type: table` のような行）
+        var items: [Int] = []
+        var itemIndent: Int?
+        var end = lines.count
+        for number in (viewsLine + 1)..<lines.count {
+            let line = lines[number]
+            if isBlank(line) { continue }
+            let depth = indent(line)
+            if depth == 0 { end = number; break }
+            if line.dropFirst(depth).hasPrefix("- ") {
+                if itemIndent == nil { itemIndent = depth }
+                if depth == itemIndent { items.append(number) }
+            }
+        }
+        guard let itemIndent, items.indices.contains(index) else { return nil }
+        let start = items[index]
+        var itemEnd = index + 1 < items.count ? items[index + 1] : end
+        while itemEnd > start + 1, isBlank(lines[itemEnd - 1]) { itemEnd -= 1 }
+        let keyIndent = itemIndent + 2
+        let pad = String(repeating: " ", count: keyIndent)
+
+        /// キーの行から、そのキーの値の最後の行まで
+        func block(_ key: String) -> Range<Int>? {
+            guard let keyLine = (start..<itemEnd).first(where: { number in
+                let line = lines[number]
+                return number == start
+                    ? line.dropFirst(itemIndent + 2).hasPrefix(key + ":")
+                    : indent(line) == keyIndent && line.dropFirst(keyIndent).hasPrefix(key + ":")
+            }) else { return nil }
+            guard keyLine != start else { return nil }
+            var last = keyLine + 1
+            while last < itemEnd, isBlank(lines[last]) || indent(lines[last]) > keyIndent
+                || (indent(lines[last]) == keyIndent && lines[last].dropFirst(keyIndent).hasPrefix("- ")) {
+                last += 1
+            }
+            return keyLine..<last
+        }
+
+        let orderLines = [pad + "order:"] + order.map { pad + "  - " + scalar($0) }
+        let orderBlock = block("order")
+        let sizeBlock = block("columnSize")
+        var sizeLines: [String] = []
+        var remaining = columnSize
+        if let sizeBlock {
+            sizeLines = Array(lines[sizeBlock])
+            for number in sizeLines.indices.dropFirst() {
+                let line = sizeLines[number]
+                guard let colon = line.range(of: ": ", options: .backwards) else { continue }
+                var key = String(line[..<colon.lowerBound]).trimmingCharacters(in: .whitespaces)
+                if key.count >= 2, key.hasPrefix("\""), key.hasSuffix("\"") { key = String(key.dropFirst().dropLast()) }
+                let id = BaseExpression.propertyID(key)
+                if let width = remaining.removeValue(forKey: id) {
+                    sizeLines[number] = String(line[..<colon.upperBound]) + String(width)
+                }
+            }
+        } else if !remaining.isEmpty {
+            sizeLines = [pad + "columnSize:"]
+        }
+        // 新しい列の幅は、列の順番に並べて末尾に足す
+        let newKeys = remaining.keys.sorted { (order.firstIndex(of: $0) ?? .max, $0) < (order.firstIndex(of: $1) ?? .max, $1) }
+        sizeLines += newKeys.map { pad + "  " + scalar($0) + ": " + String(remaining[$0]!) }
+        // 後ろのブロックから差し替えると、前のブロックの行番号がずれない
+        var replacements: [(Range<Int>, [String])] = []
+        if let orderBlock { replacements.append((orderBlock, orderLines)) }
+        if let sizeBlock { replacements.append((sizeBlock, sizeLines)) }
+        var appended: [String] = []
+        if orderBlock == nil { appended += orderLines }
+        if sizeBlock == nil { appended += sizeLines }
+        if !appended.isEmpty { replacements.append((itemEnd..<itemEnd, appended)) }
+        for (range, replacement) in replacements.sorted(by: { $0.0.lowerBound > $1.0.lowerBound }) {
+            lines.replaceSubrange(range, with: replacement)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// 引用符なしでは読み違える名前だけ囲む
+    private static func scalar(_ text: String) -> String {
+        let special = text.contains(": ") || text.contains(" #") || text.hasSuffix(":")
+            || text.first.map { "-?:,[]{}#&*!|>'\"%@`".contains($0) } == true
+            || text != text.trimmingCharacters(in: .whitespaces)
+        guard special else { return text }
+        return "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }

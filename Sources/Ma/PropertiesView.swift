@@ -116,6 +116,11 @@ final class PropertiesView: NSView, NSTextFieldDelegate, NSTokenFieldDelegate {
         case (.checkbox, _):
             let button = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleCheckbox(_:)))
             control = button
+        case (.date, _), (.datetime, _):
+            let cell = DateCell()
+            cell.includesTime = type == .datetime
+            cell.onChange = { [weak self] text in self?.onSet?(entry.key, .scalar(text), type) }
+            control = cell
         case (let type, _) where type.isList:
             let field = NSTokenField()
             field.tokenStyle = .rounded
@@ -169,6 +174,8 @@ final class PropertiesView: NSView, NSTextFieldDelegate, NSTokenFieldDelegate {
 
     private func fill(_ row: Row) {
         switch row.valueControl {
+        case let cell as DateCell:
+            cell.text = row.value.text
         case let chips as ChipsView:
             guard let schema = row.schema else { break }
             // 値がなければ既定値を入っているものとして見せる（ファイルには書かない）
@@ -323,51 +330,13 @@ final class PropertiesView: NSView, NSTextFieldDelegate, NSTokenFieldDelegate {
 
     // MARK: - 選択肢
 
-    /// チップを押したら選択肢のメニューを出す。マルチセレクトは選ぶたびに付け外しする
+    /// チップを押したら選択肢のメニューを出す
     private func showOptions(for view: ChipsView) {
         guard let row = rows.first(where: { $0.valueControl === view }), let schema = row.schema else { return }
-        let current: [String]
-        switch row.value {
-        case .list(let items): current = items
-        case .scalar(let text) where !text.isEmpty: current = [text]
-        default: current = schema.defaultValue.map { [$0] } ?? []
-        }
-        let menu = NSMenu()
-        for option in schema.options {
-            let item = menu.addItem(withTitle: option.label, action: #selector(chooseOption(_:)), keyEquivalent: "")
-            item.image = schema.dot(for: option)
-            item.state = current.contains(option.value) ? .on : .off
-            item.representedObject = (row.key, option.value)
-            item.target = self
-        }
-        // 選択肢にない値も、今入っているなら外せるように出す
-        for value in current where schema.option(for: value) == nil {
-            let item = menu.addItem(withTitle: value, action: #selector(chooseOption(_:)), keyEquivalent: "")
-            item.state = .on
-            item.representedObject = (row.key, value)
-            item.target = self
-        }
-        if schema.kind == .select, !current.isEmpty {
-            menu.addItem(.separator())
-            let clear = menu.addItem(withTitle: "クリア", action: #selector(chooseOption(_:)), keyEquivalent: "")
-            clear.representedObject = (row.key, "")
-            clear.target = self
+        let menu = schema.optionsMenu(for: row.value) { [weak self] value in
+            self?.onSet?(row.key, value, schema.kind == .multiSelect ? .multitext : .text)
         }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.maxY + 2), in: view)
-    }
-
-    @objc private func chooseOption(_ sender: NSMenuItem) {
-        guard let (key, value) = sender.representedObject as? (String, String),
-              let row = rows.first(where: { $0.key == key }), let schema = row.schema
-        else { return }
-        if schema.kind == .multiSelect {
-            var items: [String]
-            if case .list(let current) = row.value { items = current } else { items = row.value.text.isEmpty ? [] : [row.value.text] }
-            if let index = items.firstIndex(of: value) { items.remove(at: index) } else { items.append(value) }
-            onSet?(key, .list(items), .multitext)
-        } else {
-            onSet?(key, .scalar(value), .text)
-        }
     }
 
     // MARK: - 値の確定
