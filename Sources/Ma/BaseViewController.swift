@@ -31,6 +31,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     private var saveColumnsTask: Task<Void, Never>?
 
     private let viewPicker = NSSegmentedControl()
+    /// グループ化するプロパティと向きを選ぶボタン（Notion のビューの上の控えめなボタンにならう）
+    private let groupButton = NSButton(title: "", target: nil, action: nil)
     private let countLabel = NSTextField(labelWithString: "")
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
     private let tableView = BaseTableView()
@@ -44,6 +46,12 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         viewPicker.trackingMode = .selectOne
         viewPicker.target = self
         viewPicker.action = #selector(pickView(_:))
+        groupButton.isBordered = false
+        groupButton.imagePosition = .imageLeading
+        groupButton.contentTintColor = .secondaryLabelColor
+        groupButton.font = .systemFont(ofSize: 12)
+        groupButton.target = self
+        groupButton.action = #selector(showGroupMenu(_:))
         countLabel.textColor = .secondaryLabelColor
         countLabel.font = .systemFont(ofSize: 12)
         messageLabel.textColor = .secondaryLabelColor
@@ -76,15 +84,17 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         scrollView.backgroundColor = .textBackgroundColor
 
         let container = NSView()
-        for view in [viewPicker, countLabel, messageLabel, scrollView] {
+        for view in [viewPicker, groupButton, countLabel, messageLabel, scrollView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
         NSLayoutConstraint.activate([
             viewPicker.topAnchor.constraint(equalTo: container.topAnchor, constant: 14),
             viewPicker.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            groupButton.centerYAnchor.constraint(equalTo: viewPicker.centerYAnchor),
+            groupButton.leadingAnchor.constraint(equalTo: viewPicker.trailingAnchor, constant: 12),
             countLabel.centerYAnchor.constraint(equalTo: viewPicker.centerYAnchor),
-            countLabel.leadingAnchor.constraint(equalTo: viewPicker.trailingAnchor, constant: 12),
+            countLabel.leadingAnchor.constraint(equalTo: groupButton.trailingAnchor, constant: 12),
             messageLabel.topAnchor.constraint(equalTo: viewPicker.bottomAnchor, constant: 16),
             messageLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             messageLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
@@ -201,7 +211,10 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         tableView.reloadData()
         setColumns(view, base: base)
         // グループに分けるときは、表の上の見出しの代わりにグループごとに列名を出す
-        tableView.headerView = view.groupBy == nil ? headerView : nil
+        // 最初に開いたビューがグループ分けでも、外す前の見出しを退避する（三項演算子の中だと nil にしたあとで読んでしまう）
+        let header = headerView
+        tableView.headerView = view.groupBy == nil ? header : nil
+        updateGroupButton(view, base: base)
         loadCollapsed()
         layOutRows()
     }
@@ -283,6 +296,80 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         } catch {
             NSLog("列の保存に失敗: \(url.path): \(error)")
         }
+    }
+
+    // MARK: - グループ化の設定
+
+    private func updateGroupButton(_ view: BaseFile.View, base: BaseFile) {
+        groupButton.title = view.groupBy.map { "グループ: " + base.displayName(of: $0.property) } ?? "グループ"
+        let image = NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: nil)
+        groupButton.image = image?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+    }
+
+    /// 「グループなし」、グループにできるプロパティ（表の列と、`ma:` で型を決めたプロパティ）、昇順・降順
+    @objc private func showGroupMenu(_ sender: NSButton) {
+        guard let base, base.views.indices.contains(selectedView) else { return }
+        let view = base.views[selectedView]
+        let menu = NSMenu()
+        let none = NSMenuItem(title: "グループなし", action: #selector(pickGroupProperty(_:)), keyEquivalent: "")
+        none.target = self
+        none.state = view.groupBy == nil ? .on : .off
+        menu.addItem(none)
+        menu.addItem(.separator())
+        var properties = view.order.isEmpty ? ["file.name"] : view.order
+        for property in base.schemas.keys.sorted() + [view.groupBy?.property].compactMap({ $0 }) where !properties.contains(property) {
+            properties.append(property)
+        }
+        for property in properties {
+            let item = NSMenuItem(title: base.displayName(of: property), action: #selector(pickGroupProperty(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = property
+            item.image = NSImage(systemSymbolName: symbolName(of: property), accessibilityDescription: nil)
+            item.state = view.groupBy?.property == property ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        for (title, ascending) in [("昇順", true), ("降順", false)] {
+            let item = NSMenuItem(title: title, action: view.groupBy == nil ? nil : #selector(pickGroupDirection(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ascending
+            item.state = view.groupBy?.ascending == ascending ? .on : .off
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    }
+
+    @objc private func pickGroupProperty(_ sender: NSMenuItem) {
+        guard let base, base.views.indices.contains(selectedView) else { return }
+        let view = base.views[selectedView]
+        guard let property = sender.representedObject as? String else { return saveGroupBy(nil) }
+        // 列にあるプロパティは `.base` の order と同じ書き方（`種別` など）で書く
+        let raw = Dictionary(zip(view.order, view.rawOrder), uniquingKeysWith: { first, _ in first })
+        saveGroupBy((raw[property] ?? property, view.groupBy?.ascending ?? true))
+    }
+
+    @objc private func pickGroupDirection(_ sender: NSMenuItem) {
+        guard let base, base.views.indices.contains(selectedView),
+              let groupBy = base.views[selectedView].groupBy, let ascending = sender.representedObject as? Bool else { return }
+        let view = base.views[selectedView]
+        let raw = Dictionary(zip(view.order, view.rawOrder), uniquingKeysWith: { first, _ in first })
+        saveGroupBy((raw[groupBy.property] ?? groupBy.property, ascending))
+    }
+
+    /// そのビューの `groupBy` を `.base` に書き、表を作り直す
+    private func saveGroupBy(_ groupBy: (property: String, ascending: Bool)?) {
+        guard let url else { return }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let updated = BaseFile.updatingGroupBy(text, view: selectedView, groupBy: groupBy) else {
+                return NSLog("グループ化を保存できません（.base の形が想定と違います）: \(url.path)")
+            }
+            if updated != text { try updated.write(to: url, atomically: true, encoding: .utf8) }
+            base = try BaseFile(yaml: updated)
+        } catch {
+            NSLog("グループ化の保存に失敗: \(url.path): \(error)")
+        }
+        rebuild()
     }
 
     // MARK: - 表
