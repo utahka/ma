@@ -4,7 +4,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let vault = Vault()
     private let sidebar = SidebarViewController()
-    private let editor = EditorViewController()
+    private let editor = EditorAreaViewController()
     private var window: NSWindow!
 
     /// ファイルを渡されて起動したときは didFinishLaunching より先に open が呼ばれるので、画面はここで作る
@@ -39,19 +39,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
 
-        sidebar.onSelect = { [vault] url in vault.open(url) }
-        editor.onChange = { [vault] text in vault.textDidChange(text) }
-        vault.onTreeChange = { [unowned self] in sidebar.reload(vault.tree) }
+        sidebar.onSelect = { [vault] url, newTab in vault.open(url, newTab: newTab) }
+        editor.onChange = { [vault] url, text in vault.textDidChange(text, url: url) }
+        editor.tabBar.onSelect = { [vault] index in vault.selectTab(at: index) }
+        editor.tabBar.onClose = { [vault] index in vault.closeTab(at: index) }
+        editor.tabBar.onMove = { [vault] source, destination in vault.moveTab(from: source, to: destination) }
+        editor.tabBar.onNewTab = { [vault] in vault.newTab() }
+        vault.onTreeChange = { [unowned self] in
+            sidebar.reload(vault.tree)
+            sidebar.select(vault.activeTab.url)
+        }
         sidebar.calendarView.onSelectDate = { [vault] date in vault.openDailyNote(for: date) }
         vault.onNotesChange = { [unowned self] in
             let calendar = sidebar.calendarView
             calendar.firstWeekday = vault.dailyNotes?.settings.firstWeekday ?? Calendar.current.firstWeekday
             calendar.hasNote = vault.dailyNotes.map { notes in { notes.exists(for: $0) } }
         }
-        vault.onDocumentChange = { [unowned self] in
-            editor.show(vault.document)
-            sidebar.calendarView.selectedDate = vault.document.flatMap { vault.dailyNotes?.date(of: $0.url) }
-            window.title = vault.document?.url.deletingPathExtension().lastPathComponent ?? "Ma"
+        vault.onLoad = { [unowned self] tab, document in editor.show(document, in: tab) }
+        vault.onTabsChange = { [unowned self] in
+            editor.update(tabs: vault.tabs, activeIndex: vault.activeIndex)
+            let url = vault.activeTab.url
+            sidebar.select(url)
+            sidebar.calendarView.selectedDate = url.flatMap { vault.dailyNotes?.date(of: $0) }
+            window.title = url?.deletingPathExtension().lastPathComponent ?? "Ma"
             window.subtitle = vault.root?.lastPathComponent ?? ""
         }
     }
@@ -72,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first(where: { $0.pathExtension.lowercased() == "md" }) else { return }
         if let root = vault.root, url.path.hasPrefix(root.path + "/") {
-            vault.open(url)
+            vault.open(url, newTab: true)
         } else {
             vault.setRoot(url.deletingLastPathComponent(), remember: false)
             vault.open(url)
@@ -90,6 +100,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openFolder(_ sender: Any?) { vault.chooseFolder() }
     @objc func save(_ sender: Any?) { vault.saveNow() }
+    @objc func newTab(_ sender: Any?) { vault.newTab() }
+    /// 何も開いていないタブが1つだけなら、ウィンドウを閉じる
+    @objc func closeTab(_ sender: Any?) {
+        if vault.tabs.count == 1, vault.activeTab.url == nil {
+            window.performClose(sender)
+        } else {
+            vault.closeTab(at: vault.activeIndex)
+        }
+    }
+    @objc func selectNextTab(_ sender: Any?) { vault.selectTab(at: (vault.activeIndex + 1) % vault.tabs.count) }
+    @objc func selectPreviousTab(_ sender: Any?) {
+        vault.selectTab(at: (vault.activeIndex + vault.tabs.count - 1) % vault.tabs.count)
+    }
+    /// ⌘1〜⌘8 はその番号のタブ、⌘9 は右端のタブ
+    @objc func selectTabByNumber(_ sender: NSMenuItem) {
+        vault.selectTab(at: sender.tag == 9 ? vault.tabs.count - 1 : sender.tag - 1)
+    }
     @objc func openTodayNote(_ sender: Any?) {
         vault.openDailyNote(for: Date())
         sidebar.calendarView.show(month: Date())
@@ -103,11 +130,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(submenu: app, title: "Ma")
 
         let file = NSMenu(title: "ファイル")
+        file.addItem(withTitle: "新規タブ", action: #selector(newTab(_:)), keyEquivalent: "t")
         file.addItem(withTitle: "フォルダを開く…", action: #selector(openFolder(_:)), keyEquivalent: "o")
         file.addItem(withTitle: "保存", action: #selector(save(_:)), keyEquivalent: "s")
         file.addItem(withTitle: "今日のデイリーノート", action: #selector(openTodayNote(_:)), keyEquivalent: "d")
         file.addItem(.separator())
-        file.addItem(withTitle: "閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        file.addItem(withTitle: "タブを閉じる", action: #selector(closeTab(_:)), keyEquivalent: "w")
+        file.addItem(withTitle: "ウインドウを閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "W")
         main.addItem(submenu: file, title: "ファイル")
 
         let edit = NSMenu(title: "編集")
@@ -124,13 +153,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(submenu: edit, title: "編集")
 
         let view = NSMenu(title: "表示")
-        view.addItem(withTitle: "ソース表示", action: #selector(EditorViewController.toggleSourceMode(_:)), keyEquivalent: "e")
+        view.addItem(withTitle: "ソース表示", action: #selector(EditorAreaViewController.toggleSourceMode(_:)), keyEquivalent: "e")
         let toggle = view.addItem(withTitle: "サイドバーを切り替え", action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "s")
         toggle.keyEquivalentModifierMask = [.command, .control]
         main.addItem(submenu: view, title: "表示")
 
         let windowMenu = NSMenu(title: "ウインドウ")
         windowMenu.addItem(withTitle: "しまう", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "次のタブを表示", action: #selector(selectNextTab(_:)), keyEquivalent: "}")
+        windowMenu.addItem(withTitle: "前のタブを表示", action: #selector(selectPreviousTab(_:)), keyEquivalent: "{")
+        let nextTab = windowMenu.addItem(withTitle: "次のタブを表示", action: #selector(selectNextTab(_:)), keyEquivalent: "\t")
+        nextTab.keyEquivalentModifierMask = .control
+        nextTab.isHidden = true
+        nextTab.allowsKeyEquivalentWhenHidden = true
+        let previousTab = windowMenu.addItem(withTitle: "前のタブを表示", action: #selector(selectPreviousTab(_:)), keyEquivalent: "\t")
+        previousTab.keyEquivalentModifierMask = [.control, .shift]
+        previousTab.isHidden = true
+        previousTab.allowsKeyEquivalentWhenHidden = true
+        for number in 1...9 {
+            let item = windowMenu.addItem(withTitle: number == 9 ? "最後のタブを表示" : "タブ \(number) を表示",
+                                          action: #selector(selectTabByNumber(_:)), keyEquivalent: "\(number)")
+            item.tag = number
+        }
         main.addItem(submenu: windowMenu, title: "ウインドウ")
         NSApp.windowsMenu = windowMenu
 

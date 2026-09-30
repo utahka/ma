@@ -1,8 +1,10 @@
 import AppKit
 
-/// vault のファイルツリーと、その下のカレンダー。ノートを選ぶと `onSelect` を呼ぶ
+/// vault のファイルツリーと、その下のカレンダー。ノートを選ぶと `onSelect` を呼ぶ（⌘クリックは新しいタブ）
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
-    var onSelect: ((URL) -> Void)?
+    var onSelect: ((URL, _ newTab: Bool) -> Void)?
+    /// タブの切り替えに合わせて選択行を動かしている間は、ノートを開き直さない
+    private var isSyncingSelection = false
     let calendarView = CalendarView()
 
     private let outlineView = NSOutlineView()
@@ -17,6 +19,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.rowSizeStyle = .default
         outlineView.dataSource = self
         outlineView.delegate = self
+        outlineView.target = self
+        outlineView.action = #selector(outlineViewClicked(_:))
 
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
@@ -53,6 +57,27 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.reloadData()
     }
 
+    /// 選択中のタブのノートの行を選ぶ。閉じたフォルダの中にあるときは選択を外す
+    func select(_ url: URL?) {
+        let row = (0..<outlineView.numberOfRows).first { (outlineView.item(atRow: $0) as? FileNode)?.url.path == url?.path }
+        isSyncingSelection = true
+        if let row {
+            outlineView.selectRowIndexes([row], byExtendingSelection: false)
+            outlineView.scrollRowToVisible(row)
+        } else {
+            outlineView.deselectAll(nil)
+        }
+        isSyncingSelection = false
+    }
+
+    /// ⌘クリックは選択の切り替えになるので、クリックの操作として受けて新しいタブで開く
+    @objc private func outlineViewClicked(_ sender: Any?) {
+        guard NSApp.currentEvent?.modifierFlags.contains(.command) == true,
+              let node = outlineView.item(atRow: outlineView.clickedRow) as? FileNode, !node.isDirectory
+        else { return }
+        onSelect?(node.url, true)
+    }
+
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         (item as? FileNode)?.children.count ?? tree.count
     }
@@ -77,12 +102,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
-        guard let node = outlineView.item(atRow: outlineView.selectedRow) as? FileNode else { return }
+        guard !isSyncingSelection, NSApp.currentEvent?.modifierFlags.contains(.command) != true,
+              let node = outlineView.item(atRow: outlineView.selectedRow) as? FileNode else { return }
         if node.isDirectory {
             // フォルダは選択ではなく開閉として扱う
             if outlineView.isItemExpanded(node) { outlineView.collapseItem(node) } else { outlineView.expandItem(node) }
         } else {
-            onSelect?(node.url)
+            onSelect?(node.url, false)
         }
     }
 

@@ -229,8 +229,10 @@ final class EditorTextView: NSTextView {
     }
 }
 
-final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuItemValidation {
-    var onChange: ((String) -> Void)?
+/// 1つのタブの中身。タブごとに作るので、取り消し履歴・カーソル・スクロール位置はタブごとに残る
+final class EditorViewController: NSViewController, NSTextViewDelegate {
+    var onChange: ((URL, String) -> Void)?
+    private(set) var url: URL?
 
     private let textView = EditorTextView(usingTextLayoutManager: true)
     private let placeholder = NSTextField(labelWithString: "ノートを選択してください")
@@ -240,9 +242,10 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     /// 直近の装飾で見つかった表。表の中での Tab や Enter の移動先を求めるのに使う
     private var tables: [TableLayout] = []
 
-    private static let sourceModeKey = "sourceMode"
-    /// ソース表示（装飾なし）かどうか。⌘E で切り替え、次回の起動にも引き継ぐ
-    private var sourceMode = AppDefaults.shared.bool(forKey: sourceModeKey)
+    /// ソース表示（装飾なし）かどうか。切り替えと記録は EditorAreaViewController が受け持つ
+    var sourceMode = false {
+        didSet { if sourceMode != oldValue, isViewLoaded { restyle(force: true) } }
+    }
 
     override func loadView() {
         textView.delegate = self
@@ -263,6 +266,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         textView.onTextWidthChange = { [weak self] in self?.restyle(force: true) }
 
         let scrollView = NSScrollView()
+        // タブバーの下に置くので、タイトルバーの分の余白は要らない
+        scrollView.automaticallyAdjustsContentInsets = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
@@ -285,6 +290,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
     }
 
     func show(_ document: OpenDocument?) {
+        url = document?.url
         placeholder.isHidden = document != nil
         textView.isEditable = document != nil
         textView.string = document?.text ?? ""
@@ -292,26 +298,17 @@ final class EditorViewController: NSViewController, NSTextViewDelegate, NSMenuIt
         textView.setSelectedRange(NSRange(location: 0, length: 0))
         restyle(force: true)
         textView.scrollToBeginningOfDocument(nil)
-        if document != nil { view.window?.makeFirstResponder(textView) }
+        focus()
     }
 
-    @objc func toggleSourceMode(_ sender: Any?) {
-        sourceMode.toggle()
-        AppDefaults.shared.set(sourceMode, forKey: Self.sourceModeKey)
-        restyle(force: true)
-    }
-
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(toggleSourceMode(_:)) {
-            menuItem.state = sourceMode ? .on : .off
-        }
-        return true
+    func focus() {
+        if url != nil { view.window?.makeFirstResponder(textView) }
     }
 
     func textDidChange(_ notification: Notification) {
         // 日本語の変換中（未確定文字あり）は保存も装飾もしない。確定時にもう一度呼ばれる
         guard !textView.hasMarkedText() else { return }
-        onChange?(textView.string)
+        if let url { onChange?(url, textView.string) }
         restyle(force: true)
     }
 
