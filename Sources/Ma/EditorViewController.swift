@@ -540,6 +540,30 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         if url != nil { view.window?.makeFirstResponder(textView) }
     }
 
+    /// カーソル行の前に、Markdown を読む AI 向けの HTML コメントを挿入する
+    func addAIComment() {
+        guard url != nil else { return }
+        let alert = NSAlert()
+        alert.messageText = "AI へのコメント"
+        alert.informativeText = "このノートを読む AI への指示や補足を入力してください。"
+        alert.addButton(withTitle: "追加")
+        alert.addButton(withTitle: "キャンセル")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.placeholderString = "例: この段落を短く書き直して"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let comment = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "--", with: "—")
+        guard !comment.isEmpty else { return }
+        let string = textView.string as NSString
+        let location = min(textView.selectedRange().location, string.length)
+        let line = string.lineRange(for: NSRange(location: location, length: 0))
+        let insertion = "<!-- AI: \(comment) -->\n"
+        textView.replace(NSRange(location: line.location, length: 0), with: insertion, actionName: "AI へのコメントを追加")
+        textView.setSelectedRange(NSRange(location: line.location + (insertion as NSString).length, length: 0))
+    }
+
     func textDidChange(_ notification: Notification) {
         // 日本語の変換中（未確定文字あり）は保存も装飾もしない。確定時にもう一度呼ばれる
         guard !textView.hasMarkedText() else { return }

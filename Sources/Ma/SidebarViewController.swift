@@ -48,16 +48,6 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 4
-        // Obsidian のように、信号機ボタンのすぐ右にサイドバーを閉じるボタンを置く（閉じたあとはタブバーの同じ位置に開くボタンが出る）
-        let toggle = NSButton(image: Self.centeredSymbol("sidebar.left", label: "サイドバーを閉じる"),
-                              target: self, action: #selector(toggleSidebarClicked(_:)))
-        toggle.isBordered = false
-        toggle.refusesFirstResponder = true
-        toggle.contentTintColor = .secondaryLabelColor
-        toggle.widthAnchor.constraint(equalToConstant: TrafficLights.sidebarToggleWidth).isActive = true
-        toggle.toolTip = "サイドバーを閉じる"
-        buttons.addArrangedSubview(toggle)
-        buttons.setCustomSpacing(12, after: toggle)
         for (mode, symbol, label) in [(Mode.files, "folder", "ファイル"), (.bookmarks, "star", "お気に入り")] {
             let button = NSButton(image: Self.centeredSymbol(symbol, label: label), target: self, action: #selector(modeButtonClicked(_:)))
             // 選んでいる一覧は枠ではなく色で示す
@@ -69,6 +59,16 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             modeButtons[mode] = button
             buttons.addArrangedSubview(button)
         }
+        // 一覧の切り替えとは役割が違うので、間を空けて右側に置く
+        let toggle = NSButton(image: Self.centeredSymbol("sidebar.left", label: "サイドバーを閉じる"),
+                              target: self, action: #selector(toggleSidebarClicked(_:)))
+        toggle.isBordered = false
+        toggle.refusesFirstResponder = true
+        toggle.contentTintColor = .secondaryLabelColor
+        toggle.widthAnchor.constraint(equalToConstant: TrafficLights.sidebarToggleWidth).isActive = true
+        toggle.toolTip = "サイドバーを閉じる"
+        if let favorite = modeButtons[.bookmarks] { buttons.setCustomSpacing(12, after: favorite) }
+        buttons.addArrangedSubview(toggle)
 
         for (mode, outlineView) in [(Mode.files, filesView), (.bookmarks, bookmarksView)] {
             let column = NSTableColumn(identifier: .init("name"))

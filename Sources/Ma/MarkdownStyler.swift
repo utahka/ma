@@ -36,6 +36,7 @@ struct MarkdownStyler {
     private let tableRow = Self.regex(#"^[ \t]*\|"#)
     private let tableSeparator = Self.regex(#"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$"#)
     private let lineBreakTag = Self.regex(#"<br\s*/?>"#, options: [.caseInsensitive])
+    private let aiComment = Self.regex(#"^<!--\s*AI:\s*(.*?)\s*-->$"#, options: [.caseInsensitive])
 
     private struct Line {
         let full: NSRange
@@ -95,6 +96,22 @@ struct MarkdownStyler {
         while index < lines.count {
             let line = lines[index]
             let active = isActive(line.full)
+
+            if let match = aiComment.firstMatch(in: text, range: line.content) {
+                let body = match.range(at: 1)
+                if !active {
+                    let prefix = NSRange(location: line.content.location, length: body.location - line.content.location)
+                    let suffix = NSRange(location: NSMaxRange(body), length: NSMaxRange(line.content) - NSMaxRange(body))
+                    storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear], range: prefix)
+                    storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear], range: suffix)
+                }
+                storage.addAttributes([
+                    .foregroundColor: NSColor.systemPurple,
+                    .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                ], range: body)
+                index += 1
+                continue
+            }
 
             if let end = embedEnd(from: index, in: lines, text: text),
                !isActive(line.full.union(lines[end].full)),
