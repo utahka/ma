@@ -94,6 +94,12 @@ struct MarkdownStyler {
             let line = lines[index]
             let active = isActive(line.full)
 
+            if !inFence, let end = embedEnd(from: index, in: lines, text: text),
+               !isActive(line.full.union(lines[end].full)),
+               styleEmbed(Array(lines[index...end]), text: text, in: storage) {
+                index = end + 1
+                continue
+            }
             if fence.firstMatch(in: text, range: line.content) != nil {
                 storage.addAttributes([.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor], range: line.content)
                 inFence.toggle()
@@ -125,6 +131,33 @@ struct MarkdownStyler {
             index += 1
         }
         return tables
+    }
+
+    // MARK: - Link Embed
+
+    /// `index` の行が ```embed なら、閉じるフェンスの行番号を返す
+    private func embedEnd(from index: Int, in lines: [Line], text: String) -> Int? {
+        let string = text as NSString
+        func trimmedLine(_ line: Line) -> String { string.substring(with: line.content).trimmingCharacters(in: .whitespaces) }
+        guard trimmedLine(lines[index]) == "```embed" else { return nil }
+        return lines[(index + 1)...].firstIndex { trimmedLine($0) == "```" }
+    }
+
+    /// ```embed ブロックの文字をすべて隠し、最初の行の高さをカードの分にしてカードを描かせる。
+    /// 中身が読めない（url がない）ときは false を返し、通常のコードブロックとして見せる
+    private func styleEmbed(_ block: [Line], text: String, in storage: NSTextStorage) -> Bool {
+        let string = text as NSString
+        let body = block.dropFirst().dropLast().map { string.substring(with: $0.content) }.joined(separator: "\n")
+        guard let card = EmbedCard.parse(body) else { return false }
+        for (offset, line) in block.enumerated() {
+            let height = offset == 0 ? EmbedCard.lineHeight : 0.01
+            let style = NSMutableParagraphStyle()
+            style.minimumLineHeight = height
+            style.maximumLineHeight = height
+            storage.addAttributes([.font: hiddenFont, .foregroundColor: NSColor.clear, .paragraphStyle: style], range: line.full)
+        }
+        storage.addAttribute(.maBlock, value: card, range: block[0].full)
+        return true
     }
 
     // MARK: - 表

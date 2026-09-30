@@ -44,6 +44,16 @@ final class EditorTextView: NSTextView {
         addSubview(blockDrag.indicator)
         propertiesView.isHidden = true
         addSubview(propertiesView)
+        NotificationCenter.default.addObserver(self, selector: #selector(embedImageDidLoad(_:)), name: .maEmbedImageLoaded, object: nil)
+    }
+
+    /// Link Embed のカードの画像が届いたら、その画像を使うカードを描き直す
+    @objc private func embedImageDidLoad(_ notification: Notification) {
+        guard let image = notification.object as? String, let storage = textStorage else { return }
+        storage.enumerateAttribute(.maBlock, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let card = value as? EmbedCard, card.image == image || card.favicon == image else { return }
+            redraw(range)
+        }
     }
 
     /// プロパティ欄を、隠したフロントマターの最初の行（文書の先頭）に重ねる
@@ -112,7 +122,7 @@ final class EditorTextView: NSTextView {
             NSCursor.openHand.set()
         } else if columnEdge(at: point) != nil {
             NSCursor.resizeLeftRight.set()
-        } else if checkbox(at: point) != nil || link(at: point) != nil {
+        } else if checkbox(at: point) != nil || link(at: point) != nil || embed(at: point) != nil {
             NSCursor.pointingHand.set()
         }
     }
@@ -133,6 +143,15 @@ final class EditorTextView: NSTextView {
         }
         if let link = link(at: point) {
             onOpenLink?(link, event.modifierFlags.contains(.command))
+            return
+        }
+        if let (card, location) = embed(at: point) {
+            // ⌥クリックはブロックにカーソルを入れてソースを編集する
+            if event.modifierFlags.contains(.option) {
+                setSelectedRange(NSRange(location: location, length: 0))
+            } else {
+                onOpenLink?(.url(card.url), event.modifierFlags.contains(.command))
+            }
             return
         }
         guard let hit = columnEdge(at: point) else { return super.mouseDown(with: event) }
@@ -230,6 +249,17 @@ final class EditorTextView: NSTextView {
         guard let hit = fragment.checkboxes().first(where: { $0.rect.insetBy(dx: -3, dy: -3).contains(local) }) else { return nil }
         let paragraphStart = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
         return (NSRange(location: paragraphStart + hit.range.location, length: hit.range.length), hit.checked)
+    }
+
+    /// マウス位置に Link Embed のカードがあれば、カードとブロックの先頭の文書内の位置を返す
+    private func embed(at point: NSPoint) -> (card: EmbedCard, location: Int)? {
+        let location = containerPoint(point)
+        guard let fragment = fragment(at: location), let card = fragment.decoration as? EmbedCard,
+              fragment.embedCardRect().offsetBy(dx: 0, dy: fragment.layoutFragmentFrame.minY).contains(location),
+              let content = textLayoutManager?.textContentManager
+        else { return nil }
+        let start = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+        return (card, start)
     }
 
     /// マウス位置の文字にリンクがあれば返す。カーソルがリンクの中にあるあいだは編集中とみなし、クリックでは開かない
