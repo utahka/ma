@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         sidebar.onSelect = { [vault] url, newTab in vault.open(url, newTab: newTab) }
         editor.onChange = { [vault] url, text in vault.textDidChange(text, url: url) }
+        editor.onOpenLink = { [unowned self] target, newTab in openLink(target, newTab: newTab) }
         editor.tabBar.onSelect = { [vault] index in vault.selectTab(at: index) }
         editor.tabBar.onClose = { [vault] index in vault.closeTab(at: index) }
         editor.tabBar.onMove = { [vault] source, destination in vault.moveTab(from: source, to: destination) }
@@ -97,6 +98,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    /// `[[ノート名]]` は vault のノートを開き、`[表示名](URL)` は既定のブラウザなど URL に対応するアプリで開く。
+    /// スキームのない URL は、開いているノートからの相対パスのノートとして扱う
+    private func openLink(_ target: LinkTarget, newTab: Bool) {
+        switch target {
+        case .note(let name):
+            guard let url = vault.noteURL(forLink: name) else { return }
+            vault.open(url, newTab: newTab)
+        case .url(let string):
+            if let url = URL(string: string), url.scheme != nil {
+                NSWorkspace.shared.open(url)
+            } else if let path = string.removingPercentEncoding, let current = vault.activeTab.url {
+                let url = current.deletingLastPathComponent().appendingPathComponent(path).standardizedFileURL
+                if url.pathExtension.lowercased() == "md", FileManager.default.fileExists(atPath: url.path) {
+                    vault.open(url, newTab: newTab)
+                }
+            }
+        }
     }
 
     @objc func openFolder(_ sender: Any?) { vault.chooseFolder() }

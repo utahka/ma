@@ -211,6 +211,40 @@ final class Vault {
         }
     }
 
+    /// `[[ノート名]]` のリンク先。Obsidian と同じく、フォルダを含まない名前は vault 全体からファイル名で探し、
+    /// 同じ名前が複数あれば開いているノートと同じフォルダ、なければ浅い位置のものを選ぶ。見つからなければ vault の直下に作る
+    func noteURL(forLink name: String) -> URL? {
+        guard let root, !name.isEmpty else { return nil }
+        let file = name.lowercased().hasSuffix(".md") ? name : name + ".md"
+        // ファイル名は濁点が分解形（NFD）で返ってくることがあるので、合成形にそろえて比べる
+        func key(_ path: String) -> String { path.precomposedStringWithCanonicalMapping.lowercased() }
+        let wanted = key(file)
+        let candidates = FileNode.notes(in: tree).filter { note in
+            let path = key(String(note.path.dropFirst(root.path.count + 1)))
+            return path == wanted || path.hasSuffix("/" + wanted)
+        }
+        let folder = activeTab.url.map { key($0.deletingLastPathComponent().path) }
+        if let found = candidates.first(where: { key($0.deletingLastPathComponent().path) == folder })
+            ?? candidates.min(by: { $0.pathComponents.count < $1.pathComponents.count }) {
+            return found
+        }
+
+        // vault の外には作らない
+        guard !file.split(separator: "/").contains("..") else { return nil }
+        let url = root.appendingPathComponent(file)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try "".write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                NSLog("ノートの作成に失敗: \(url.path): \(error)")
+                return nil
+            }
+            rescan()
+        }
+        return url
+    }
+
     /// 編集のたびに呼ばれる。0.5 秒入力が止まったら保存する
     func textDidChange(_ text: String, url: URL) {
         pendingTexts[url] = text
@@ -259,4 +293,9 @@ final class Vault {
     }
 }
 
-extension FileNode: @unchecked Sendable {}
+extension FileNode: @unchecked Sendable {
+    /// ツリーの中のノートを並べる
+    static func notes(in nodes: [FileNode]) -> [URL] {
+        nodes.flatMap { $0.isDirectory ? notes(in: $0.children) : [$0.url] }
+    }
+}

@@ -467,6 +467,7 @@ struct MarkdownStyler {
             storage.addAttributes([.font: monoFont, .backgroundColor: NSColor.quaternarySystemFill], range: match.range)
             wrapMarkers(match.range, length: 1, in: storage, active: active)
         }
+        let string = text as NSString
         func matches(_ regex: NSRegularExpression) -> [NSTextCheckingResult] {
             regex.matches(in: text, range: line).filter { match in
                 !codeRanges.contains { NSIntersectionRange($0, match.range).length > 0 }
@@ -490,7 +491,12 @@ struct MarkdownStyler {
             wrapMarkers(match.range, length: 2, in: storage, active: active)
         }
         for match in matches(wikiLink) {
-            storage.addAttribute(.foregroundColor, value: NSColor.linkColor, range: match.range)
+            let name = string.substring(with: match.range(at: 1))
+            let target = name.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+            storage.addAttributes([
+                .foregroundColor: NSColor.linkColor,
+                .maWikiLink: target.trimmingCharacters(in: .whitespaces),
+            ], range: match.range)
             wrapMarkers(match.range, length: 2, in: storage, active: active)
             // [[ノート名|表示名]] は表示名だけを見せる
             let alias = match.range(at: 2)
@@ -502,6 +508,7 @@ struct MarkdownStyler {
         for match in matches(link) {
             let label = match.range(at: 1)
             storage.addAttribute(.foregroundColor, value: NSColor.linkColor, range: label)
+            storage.addAttribute(.maURL, value: string.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespaces), range: match.range)
             marker(NSRange(location: match.range.location, length: 1), in: storage, active: active)
             marker(NSRange(location: NSMaxRange(label), length: NSMaxRange(match.range) - NSMaxRange(label)), in: storage, active: active)
         }
