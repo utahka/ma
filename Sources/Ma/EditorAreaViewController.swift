@@ -21,6 +21,8 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     private weak var shown: NSViewController?
     private let favoriteButton = NSButton()
     private let pathLabel = CopyablePathLabel(labelWithString: "")
+    /// パスと☆の行に敷く、本文と同じ色の帯。透過のままだとスクロールした本文とパスが重なって読みにくい
+    private let pathBar = BackgroundBar()
 
     private static let sourceModeKey = "sourceMode"
     /// ソース表示（装飾なし）かどうか。⌘E で全タブまとめて切り替え、次回の起動にも引き継ぐ
@@ -53,7 +55,9 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         favoriteButton.target = self
         favoriteButton.action = #selector(favoriteClicked(_:))
         favoriteButton.translatesAutoresizingMaskIntoConstraints = false
-        // 中身より後に載せて、スクロールする本文の上に重ねる
+        // 中身より後に載せて、スクロールする本文の上に重ねる。帯を先に載せてボタンとラベルの下に敷く
+        pathBar.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(pathBar)
         container.addSubview(favoriteButton)
         NSLayoutConstraint.activate([
             favoriteButton.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
@@ -61,6 +65,12 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
             favoriteButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             favoriteButton.widthAnchor.constraint(equalToConstant: 26),
             favoriteButton.heightAnchor.constraint(equalToConstant: 26),
+            // 帯は☆の下端まで。本文の上の余白（32pt）とほぼ同じなので、先頭までスクロールしたときは本文にかからない
+            pathBar.topAnchor.constraint(equalTo: content.topAnchor),
+            pathBar.bottomAnchor.constraint(equalTo: favoriteButton.bottomAnchor),
+            pathBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            // 右端のスクローラーは塞がない
+            pathBar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
         ])
         pathLabel.font = .systemFont(ofSize: 12)
         pathLabel.lineBreakMode = .byTruncatingHead
@@ -92,6 +102,8 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     /// 左上に vault からの相対パスを出す（Obsidian のパンくずに近い見た目）。フォルダ部分は薄くし、拡張子は省く。nil で隠す
     func setNotePath(_ path: String?) {
         pathLabel.isHidden = path == nil
+        // `.base` の表はパスを出さず、上端にビューの切り替えが並ぶので帯も隠す
+        pathBar.isHidden = pathLabel.isHidden
         pathLabel.path = path
         pathLabel.cancelCopiedMessage()
         guard let path else { return }
@@ -238,6 +250,15 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         if menuItem.action == #selector(addProperty(_:)) { return shown is EditorViewController }
         if menuItem.action == #selector(addAIComment(_:)) { return shown is EditorViewController }
         return true
+    }
+}
+
+/// 本文の背景色（`textBackgroundColor`）で塗りつぶすだけのビュー。draw で塗るので、ダークモードに切り替えても本文と同じ色になる
+private final class BackgroundBar: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.textBackgroundColor.setFill()
+        // macOS 14 以降は描画が bounds で切り取られず、dirtyRect が外まで広がることがある。dirtyRect を塗るとウィンドウ全体が塗りつぶされた
+        bounds.fill()
     }
 }
 
