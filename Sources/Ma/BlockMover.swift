@@ -38,6 +38,21 @@ struct BlockMover {
         blocks.last { $0.lines.contains(line) }
     }
 
+    /// リスト項目の子の項目（孫も含む）。項目の範囲の中で、先頭の行より後ろから始まるリスト項目。
+    /// 続きの行（Shift+Enter で項目の中で改行した、リスト項目でない行。`ListLine`）は子に含めない
+    func childItems(of item: MarkdownBlock) -> [MarkdownBlock] {
+        guard item.kind == .listItem else { return [] }
+        return blocks.filter { $0.kind == .listItem && $0.lines.lowerBound > item.lines.lowerBound
+            && item.lines.contains($0.lines.lowerBound) }
+    }
+
+    /// リスト項目の続きの行の行番号。項目の範囲のうち、先頭の行と子の項目の行を除いた行
+    func continuationLines(of item: MarkdownBlock) -> [Int] {
+        guard item.kind == .listItem else { return [] }
+        let children = childItems(of: item)
+        return item.lines.dropFirst().filter { line in !children.contains { $0.lines.contains(line) } }
+    }
+
     /// 落とし先になりうる行。各ブロックの先頭と文書の末尾
     var dropLines: [Int] {
         var result = Set(blocks.map(\.lines.lowerBound))
