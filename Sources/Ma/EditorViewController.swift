@@ -246,6 +246,18 @@ final class EditorTextView: NSTextView {
         )
     }
 
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return super.otherMouseDown(with: event) }
+        let point = convert(event.locationInWindow, from: nil)
+        if let target = link(at: point) {
+            onOpenLink?(target, true)
+        } else if let (card, _) = embed(at: point) {
+            onOpenLink?(.url(card.url), true)
+        } else {
+            super.otherMouseDown(with: event)
+        }
+    }
+
     override func mouseDragged(with event: NSEvent) {
         guard let drag = columnDrag else { return super.mouseDragged(with: event) }
         NSCursor.resizeLeftRight.set()
