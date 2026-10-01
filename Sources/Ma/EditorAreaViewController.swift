@@ -14,6 +14,8 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     var wikiLinkPaths: () -> [String] = { [] }
     var loadNotes: () async -> [NoteRecord] = { [] }
     var propertySchemas: (_ url: URL, _ text: String) -> [String: PropertySchema] = { _, _ in [:] }
+    /// 左上のパスからファイル名を変更する。
+    var onRenameNote: (() -> Void)?
     /// 右上の☆で、開いているノートをお気に入りに加える・外す
     var onToggleFavorite: (() -> Void)?
 
@@ -73,6 +75,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
             // 右端のスクローラーは塞がない
             pathBar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
         ])
+        pathLabel.onRename = { [weak self] in self?.onRenameNote?() }
         pathLabel.font = .systemFont(ofSize: 12)
         pathLabel.lineBreakMode = .byTruncatingHead
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -116,7 +119,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         text.append(NSAttributedString(string: (name as NSString).deletingPathExtension,
                                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
         pathLabel.attributedStringValue = text
-        pathLabel.toolTip = "クリックしてコピー: \(path)"
+        pathLabel.toolTip = "クリックしてコピー・ダブルクリックして名前を変更: \(path)"
     }
 
     @objc private func favoriteClicked(_ sender: NSButton) { onToggleFavorite?() }
@@ -173,6 +176,10 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
             base.reload()
             base.focus()
         }
+    }
+
+    func renameDocument(from oldURL: URL, to newURL: URL) {
+        for editor in editors { editor.renameDocument(from: oldURL, to: newURL) }
     }
 
     /// タブで開いているノートなら、そのエディタでプロパティを書き換えて true を返す
@@ -294,6 +301,7 @@ private final class BackgroundBar: NSView {
 /// クリックすると表示中の vault 相対パスをコピーし、少しのあいだ「コピーしました」と出すラベル
 private final class CopyablePathLabel: NSTextField {
     var path: String?
+    var onRename: (() -> Void)?
     /// 「コピーしました」を出している間、元の表示を預かる
     private var shownBeforeCopy: NSAttributedString?
     private var copiedMessageTask: Task<Void, Never>?
@@ -302,6 +310,7 @@ private final class CopyablePathLabel: NSTextField {
     func cancelCopiedMessage() {
         copiedMessageTask?.cancel()
         copiedMessageTask = nil
+        if let shownBeforeCopy { attributedStringValue = shownBeforeCopy }
         shownBeforeCopy = nil
     }
 
@@ -310,6 +319,26 @@ private final class CopyablePathLabel: NSTextField {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { renameNote(nil); return }
+        copyPath(nil)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard path != nil else { return nil }
+        let menu = NSMenu()
+        for (title, action) in [("ファイル名を変更…", #selector(renameNote(_:))), ("パスをコピー", #selector(copyPath(_:)))] {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+        }
+        return menu
+    }
+
+    @objc private func renameNote(_ sender: Any?) {
+        cancelCopiedMessage()
+        onRename?()
+    }
+
+    @objc private func copyPath(_ sender: Any?) {
         guard let path else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(path, forType: .string)
