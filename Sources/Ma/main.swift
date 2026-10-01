@@ -92,6 +92,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// 分離したウィンドウは閉じると捨てるので、クロージャは弱参照で持つ
     private func connect(_ editor: EditorAreaViewController, to vault: Vault, in window: NSWindow) {
         let isMain = vault === self.vault
+        editor.onRenameNote = { [weak vault] in
+            guard let vault, let url = vault.activeTab.url else { return }
+            let alert = NSAlert()
+            alert.messageText = "ファイル名を変更"
+            alert.informativeText = "フォルダと拡張子はそのままです。ほかのノート内のリンクは変更しません。"
+            alert.addButton(withTitle: "変更")
+            alert.addButton(withTitle: "キャンセル")
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+            field.stringValue = url.deletingPathExtension().lastPathComponent
+            alert.accessoryView = field
+            alert.window.initialFirstResponder = field
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            do { try vault.renameNote(url, to: field.stringValue) }
+            catch {
+                let message = NSAlert()
+                message.messageText = "名前を変更できませんでした"
+                message.informativeText = error.localizedDescription
+                message.runModal()
+            }
+        }
+        vault.onDocumentRename = { [weak editor] oldURL, newURL in editor?.renameDocument(from: oldURL, to: newURL) }
         editor.onChange = { [weak vault] url, text in vault?.textDidChange(text, url: url) }
         editor.onOpenLink = { [unowned self, weak vault] target, newTab in
             if let vault { openLink(target, newTab: newTab, in: vault) }

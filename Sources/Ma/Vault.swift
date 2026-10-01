@@ -122,6 +122,8 @@ final class Vault {
     var onRequestFocus: (() -> Void)?
     /// メインウィンドウで別の vault を開いたとき。分離したウィンドウを閉じる
     var onFolderClose: (() -> Void)?
+    /// ファイル名変更後、エディタの保存先も新しい URL に合わせる。
+    var onDocumentRename: ((URL, URL) -> Void)?
 
     private var pendingTexts: [URL: String] { get { folder.pendingTexts } set { folder.pendingTexts = newValue } }
     /// 最後に読み込み、または保存したディスク上の本文。外部変更との競合判定に使う
@@ -301,6 +303,59 @@ final class Vault {
         }
         for vault in folder.vaults { vault.closeTabs(inside: url) }
         rescan()
+    }
+
+    /// 同じフォルダ・同じ拡張子でファイル名を変え、開いているタブと履歴の参照も更新する。
+    @discardableResult
+    func renameNote(_ url: URL, to name: String) throws -> URL {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let root, relativePath(of: url) != nil, url.pathExtension.lowercased() == "md",
+              !name.isEmpty, name != ".", name != "..", !name.hasPrefix("."),
+              name.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\:\n\r\0")) == nil else {
+            throw NSError(domain: "Ma.Rename", code: 1, userInfo: [NSLocalizedDescriptionKey: "使用できるノート名を入力してください。フォルダや拡張子は変更できません。"])
+        }
+        let destination = url.deletingLastPathComponent().appendingPathComponent(name + "." + url.pathExtension)
+        if destination.path == url.path { return url }
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw NSError(domain: "Ma.Rename", code: 2, userInfo: [NSLocalizedDescriptionKey: "同じ名前のファイルが既にあります。"])
+        }
+        guard !folder.vaults.contains(where: { vault in
+            vault.tabs.contains { $0.url?.path == url.path && vault.isComposing?($0.id) == true }
+        }) else {
+            throw NSError(domain: "Ma.Rename", code: 3, userInfo: [NSLocalizedDescriptionKey: "日本語の変換を確定してから名前を変更してください。"])
+        }
+        let pending = pendingTexts[url]
+        let knownBeforeSave = diskTexts[url]
+        saveNow()
+        // 保存失敗で編集内容を失わない。外部の内容を選んだ場合は更新された diskTexts を使う。
+        if let pending, diskTexts[url] != pending, diskTexts[url] == knownBeforeSave {
+            textDidChange(pending, url: url)
+            throw NSError(domain: "Ma.Rename", code: 4, userInfo: [NSLocalizedDescriptionKey: "編集内容を保存できなかったため、名前の変更を中止しました。"])
+        }
+        try FileManager.default.moveItem(at: url, to: destination)
+        if let known = diskTexts.removeValue(forKey: url) { diskTexts[destination] = known }
+        folder.baseCache.removeAll()
+        for vault in folder.vaults {
+            for index in vault.tabs.indices {
+                if vault.tabs[index].url?.path == url.path { vault.tabs[index].url = destination }
+                vault.tabs[index].back = vault.tabs[index].back.map { entry in
+                    HistoryEntry(url: entry.url.path == url.path ? destination : entry.url, viewState: entry.viewState)
+                }
+                vault.tabs[index].forward = vault.tabs[index].forward.map { entry in
+                    HistoryEntry(url: entry.url.path == url.path ? destination : entry.url, viewState: entry.viewState)
+                }
+            }
+            vault.onDocumentRename?(url, destination)
+            vault.tabsDidChange()
+        }
+        if let oldPath = relativePath(of: url), let newPath = relativePath(of: destination),
+           Bookmarks.readDocument(root: root).map({ Bookmarks.contains(path: oldPath, in: $0.document["items"] as? [Any] ?? []) }) == true {
+            updateBookmarks { Bookmarks.renaming(path: oldPath, to: newPath, in: $0) }
+        }
+        rescan()
+        broadcast(\.onNotesChange)
+        broadcast(\.onExternalChange)
+        return destination
     }
 
     /// 消したノート（フォルダならその中のノート）を開いているタブを、保存せずに閉じる

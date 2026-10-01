@@ -788,6 +788,13 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    /// 本文と取り消し履歴を触らずに、名前変更後の保存先を切り替える。
+    func renameDocument(from oldURL: URL, to newURL: URL) {
+        guard url?.path == oldURL.path else { return }
+        url = newURL
+        schemaEntries = nil
+    }
+
     /// 日本語の変換中（未確定の文字がある）か
     var isComposing: Bool { textView.hasMarkedText() }
 

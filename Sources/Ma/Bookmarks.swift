@@ -107,6 +107,17 @@ enum Bookmarks {
         }
     }
 
+    static func renaming(path: String, to newPath: String, in items: [Any]) -> [Any] {
+        items.map { value in
+            guard var item = value as? [String: Any] else { return value }
+            if let children = item["items"] as? [Any] { item["items"] = renaming(path: path, to: newPath, in: children) }
+            if item["type"] as? String == "file", (item["path"] as? String).map({ samePath($0, path) }) == true {
+                item["path"] = newPath
+            }
+            return item
+        }
+    }
+
     static func removing(at indexPath: [Int], from items: [Any]) -> [Any] {
         guard let first = indexPath.first, items.indices.contains(first) else { return items }
         var items = items
