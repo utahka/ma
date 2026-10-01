@@ -97,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             if let vault { openLink(target, newTab: newTab, in: vault) }
         }
         editor.propertyTypes = { [weak vault] in vault?.propertyTypes }
+        editor.wikiLinkPaths = { [weak vault] in vault?.wikiLinkPaths() ?? [] }
         editor.loadNotes = { [weak vault] in await vault?.noteRecords() ?? [] }
         editor.propertySchemas = { [weak vault] url, text in vault?.propertySchemas(for: url, text: text) ?? [:] }
         editor.onOpenNote = { [weak vault] url, newTab in vault?.open(url, newTab: newTab) }

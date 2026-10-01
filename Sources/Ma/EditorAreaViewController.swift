@@ -11,6 +11,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
     /// `.base` の表でプロパティ名を変えたとき（対象のノート、古い名前、新しい名前）
     var onRenameProperty: (([URL], String, String) -> Void)?
     var propertyTypes: () -> PropertyTypes? = { nil }
+    var wikiLinkPaths: () -> [String] = { [] }
     var loadNotes: () async -> [NoteRecord] = { [] }
     var propertySchemas: (_ url: URL, _ text: String) -> [String: PropertySchema] = { _, _ in [:] }
     /// 右上の☆で、開いているノートをお気に入りに加える・外す
@@ -231,6 +232,7 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         editor.showsCalloutIcons = showsCalloutIcons
         editor.onChange = { [weak self] url, text in self?.onChange?(url, text) }
         editor.onOpenLink = { [weak self] target, newTab in self?.onOpenLink?(target, newTab) }
+        editor.wikiLinkPaths = { [weak self] in self?.wikiLinkPaths() ?? [] }
         editor.propertyTypes = { [weak self] in self?.propertyTypes() }
         editor.propertySchemas = { [weak self] url, text in self?.propertySchemas(url, text) ?? [:] }
     }
