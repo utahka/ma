@@ -1146,11 +1146,12 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
             return true
         }
         guard !sourceMode, textView.selectedRange().length == 0 else { return false }
-        let caret = textView.selectedRange().location
+        var caret = textView.selectedRange().location
         guard let table = tables.first(where: { NSLocationInRange(caret, $0.tableRange) || caret == $0.endOfLastRow }),
-              let (row, column) = table.cell(containing: caret)
+              let (row, column) = table.cell(containing: caret) ?? (isReturn(selector) ? lastCell(of: table, endingBefore: &caret) : nil)
         else {
-            return breakCalloutLine(selector, at: caret) || breakListLine(selector, at: caret) || continueList(selector, at: caret)
+            return breakQuotedTableCell(selector, at: caret) || breakCalloutLine(selector, at: caret)
+                || breakListLine(selector, at: caret) || continueList(selector, at: caret)
                 || continueToggle(selector, at: caret)
         }
         let columns = table.columnWidths.count
@@ -1195,6 +1196,39 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         }
         return true
     }
+
+    private func isReturn(_ selector: Selector) -> Bool {
+        selector == #selector(NSResponder.insertNewline(_:)) || selector == #selector(NSResponder.insertLineBreak(_:))
+    }
+
+    /// 行の最後の `|` より後ろ（行末）は、どのセルにも入らない。最後の列の右端をクリックすると、隠した `|` を越えてここに
+    /// カーソルが置かれるので、最後のセルの末尾にいるものとして扱い、`caret` もそこへ動かす
+    private func lastCell(of table: TableLayout, endingBefore caret: inout Int) -> (row: Int, column: Int)? {
+        let string = textView.string as NSString
+        guard let row = table.rows.lastIndex(where: { $0.last.map { NSMaxRange($0) <= caret } ?? false }),
+              let last = table.rows[row].last,
+              string.substring(with: NSRange(location: NSMaxRange(last), length: caret - NSMaxRange(last))).rangeOfCharacter(from: .newlines) == nil
+        else { return nil }
+        caret = NSMaxRange(last)
+        return (row, table.rows[row].count - 1)
+    }
+
+    /// コールアウト・トグル・引用の中の表は `tables` に入らないので、表の行で Shift+Enter を押したときはここでセル内の改行 `<br>` を入れる。
+    /// 入れないと、次の breakCalloutLine が行を2つに割って表が崩れる
+    private func breakQuotedTableCell(_ selector: Selector, at caret: Int) -> Bool {
+        let shiftReturn = selector == #selector(NSResponder.insertNewline(_:)) && textView.returnKeyHasShift
+        guard shiftReturn || selector == #selector(NSResponder.insertLineBreak(_:)) else { return false }
+        let string = textView.string as NSString
+        let line = string.lineRange(for: NSRange(location: caret, length: 0))
+        // `>` を外した行が `|` で始まり、カーソルが最初の `|` より後ろにあるときだけ
+        guard let pipe = Self.quotedTableRow.firstMatch(in: textView.string, range: line)?.range,
+              caret >= NSMaxRange(pipe) else { return false }
+        textView.replace(NSRange(location: caret, length: 0), with: "<br>", actionName: "セル内の改行")
+        textView.setSelectedRange(NSRange(location: caret + 4, length: 0), affinity: .downstream, stillSelecting: false)
+        return true
+    }
+
+    private static let quotedTableRow = try! NSRegularExpression(pattern: #"^(?:[ \t]*>)+[ \t]*\|"#, options: [.anchorsMatchLines])
 
     /// コールアウトの中で Shift+Enter を押したら、次の行にも同じ深さの `>` を付けてコールアウトの中で改行する
     private func breakCalloutLine(_ selector: Selector, at caret: Int) -> Bool {
