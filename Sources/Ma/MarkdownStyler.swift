@@ -791,7 +791,17 @@ struct MarkdownStyler {
         for offset in 0..<(whitespace - 1) where string.character(at: line.location + offset) == 0x09 {
             x = (floor(x / listIndentStep) + 1) * listIndentStep
         }
-        storage.addAttribute(.kern, value: max(0, target - x), range: NSRange(location: line.location + whitespace - 1, length: 1))
+        let lastWhitespace = NSRange(location: line.location + whitespace - 1, length: 1)
+        var lastAdvance: CGFloat = 0
+        if whitespace == line.length {
+            // 空白だけの入力中の行も本文と同じ高さにする。全文字が hiddenFont だと、
+            // TextKit がカーソルも 0.01pt の高さにしてしまう。文字自体は透明のままにする。
+            storage.addAttribute(.font, value: bodyFont, range: lastWhitespace)
+            if string.character(at: lastWhitespace.location) == 0x20 {
+                lastAdvance = (" " as NSString).size(withAttributes: [.font: bodyFont]).width
+            }
+        }
+        storage.addAttribute(.kern, value: max(0, target - x) - lastAdvance, range: lastWhitespace)
     }
 
     /// 項目の行の本文の左端の位置。カーソルが外にあるときの表示（記号を中黒やチェックボックスにした表示）で測る
