@@ -13,21 +13,10 @@ enum LinkTarget {
 final class EditorTextView: NSTextView {
     private let maxTextWidth: CGFloat = 760
 
-    /// コメントを付けられる選択範囲。前後の空白を除き、1行に収まり `==` を含まない選択だけを返す
+    /// 行をまたぐ選択にも対応し、引用記号や空行はそのまま残す。
     var commentableSelection: NSRange? {
-        let string = self.string as NSString
-        var range = selectedRange()
-        guard range.length > 0, NSMaxRange(range) <= string.length else { return nil }
-        let whitespace = CharacterSet.whitespaces
-        func isSpace(_ index: Int) -> Bool {
-            string.substring(with: NSRange(location: index, length: 1)).unicodeScalars.allSatisfy(whitespace.contains)
-        }
-        while range.length > 0, isSpace(range.location) { range.location += 1; range.length -= 1 }
-        while range.length > 0, isSpace(NSMaxRange(range) - 1) { range.length -= 1 }
-        let selected = string.substring(with: range)
-        // `==` を含むと、付けたハイライトの範囲が崩れる
-        guard range.length > 0, selected.rangeOfCharacter(from: .newlines) == nil, !selected.contains("==") else { return nil }
-        return range
+        let range = selectedRange()
+        return AICommentSelection.replacement(in: string, range: range, comment: "") == nil ? nil : range
     }
 
     /// 文字を選んで右クリックしたとき、メニューの先頭に「コメントを追加…」を出す
@@ -834,7 +823,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     }
 
     /// 選択中の文字に AI 向けのコメントを付ける。`==選択した文字==<!-- AI: コメント -->` と書き、
-    /// Obsidian でもハイライトとして読める形にする。記法が行をまたげないので、1行の中の選択に限る
+    /// Obsidian でもハイライトとして読めるように、複数行は行ごとに記法を付ける
     func addAIComment() {
         guard url != nil, let range = textView.commentableSelection else { NSSound.beep(); return }
         let alert = NSAlert()
@@ -851,8 +840,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
             // コメントを途中で閉じてしまう `-->` だけを崩す（他の `--` は書いたまま残す）
             .replacingOccurrences(of: "-->", with: "->")
         guard !comment.isEmpty else { return }
-        let selected = (textView.string as NSString).substring(with: range)
-        let replacement = "==\(selected)==<!-- AI: \(comment) -->"
+        guard let replacement = AICommentSelection.replacement(in: textView.string, range: range, comment: comment) else { return }
         textView.replace(range, with: replacement, actionName: "コメントを追加")
         textView.setSelectedRange(NSRange(location: range.location + (replacement as NSString).length, length: 0))
     }
