@@ -38,6 +38,27 @@ struct BlockMover {
         blocks.last { $0.lines.contains(line) }
     }
 
+    /// 表の見出しと区切り行を除いた本文行。パイプで始まるだけの文章は対象にしない。
+    func tableBodyRows(in table: MarkdownBlock) -> ClosedRange<Int>? {
+        guard table.kind == .table, blocks.contains(table), table.lines.count > 2,
+              lines[table.lines.lowerBound + 1].contains(/^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/)
+        else { return nil }
+        return (table.lines.lowerBound + 2)...table.lines.upperBound
+    }
+
+    /// 同じ表の本文行だけを入れ替える。区切り行の列幅やセル内改行、文書末尾の改行を維持する。
+    func moveTableRow(_ row: Int, in table: MarkdownBlock, before target: Int) -> (text: String, location: Int)? {
+        guard let body = tableBodyRows(in: table), body.contains(row),
+              target >= body.lowerBound, target <= body.upperBound + 1,
+              target != row, target != row + 1 else { return nil }
+        var reordered = lines
+        let moved = reordered.remove(at: row)
+        let destination = target > row ? target - 1 : target
+        reordered.insert(moved, at: destination)
+        let location = reordered.prefix(destination).reduce(0) { $0 + ($1 as NSString).length + 1 }
+        return (reordered.joined(separator: "\n"), location)
+    }
+
     /// リスト項目の子の項目（孫も含む）。項目の範囲の中で、先頭の行より後ろから始まるリスト項目。
     /// 続きの行（Shift+Enter で項目の中で改行した、リスト項目でない行。`ListLine`）は子に含めない
     func childItems(of item: MarkdownBlock) -> [MarkdownBlock] {

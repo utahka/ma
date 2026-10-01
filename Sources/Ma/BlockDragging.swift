@@ -53,9 +53,12 @@ final class BlockDragController {
     private var mover: BlockMover?
     private var lineStarts: [Int] = []
     private var hoveredBlock: MarkdownBlock?
+    private var hoveredRow: Int?
 
     private struct Drag {
         let block: MarkdownBlock
+        let row: Int?
+        let originalText: String
         /// つかんだ位置からブロックの文字の左端までの距離。落としたときの階層を決めるのに使う
         let grabOffset: CGFloat
         var drop: BlockMover.Drop?
@@ -87,6 +90,7 @@ final class BlockDragController {
         guard drag == nil else { return }
         handle.isHidden = true
         hoveredBlock = nil
+        hoveredRow = nil
     }
 
     /// つまみの上か。NSTextView の mouseMoved が I ビームに戻すので、EditorTextView がカーソルを付け直すのに使う
@@ -99,10 +103,16 @@ final class BlockDragController {
         guard drag == nil, !textView.hasMarkedText() else { return }
         if !handle.isHidden, handle.frame.insetBy(dx: -4, dy: -4).contains(point) { return }
         let mover = currentMover()
-        guard let line = line(at: point), let block = mover.block(containing: line),
-              let position = handlePosition(for: block)
+        guard let line = line(at: point), let block = mover.block(containing: line)
+        else { return hideHandle() }
+        // 見出しのつまみは表全体、本文行のつまみはその行を動かす。
+        let row = mover.tableBodyRows(in: block)?.contains(line) == true
+            && (fragment(forLine: line) as? BlockLayoutFragment)?.decoration is TableRowDecoration ? line : nil
+        guard let position = row.flatMap({ rowHandlePosition(for: $0) }) ?? handlePosition(for: block)
         else { return hideHandle() }
         hoveredBlock = block
+        hoveredRow = row
+        handle.toolTip = row == nil ? "ドラッグして移動" : "ドラッグして表の行を移動"
         handle.frame = NSRect(x: position.x - 22, y: position.y - 11, width: 18, height: 22)
         handle.isHidden = false
     }
@@ -110,9 +120,10 @@ final class BlockDragController {
     // MARK: - ドラッグ
 
     private func beginDrag(_ event: NSEvent) {
-        guard let block = hoveredBlock, let position = handlePosition(for: block) else { return }
+        guard let block = hoveredBlock,
+              let position = hoveredRow.flatMap({ rowHandlePosition(for: $0) }) ?? handlePosition(for: block) else { return }
         let point = textView.convert(event.locationInWindow, from: nil)
-        drag = Drag(block: block, grabOffset: position.x - point.x)
+        drag = Drag(block: block, row: hoveredRow, originalText: textView.string, grabOffset: position.x - point.x)
     }
 
     private func continueDrag(_ event: NSEvent) {
@@ -130,7 +141,14 @@ final class BlockDragController {
             indicator.isHidden = true
             hideHandle()
         }
-        guard let drag, let drop = drag.drop, let (text, location) = currentMover().move(drag.block, to: drop) else { return }
+        guard let drag, textView.string == drag.originalText, let drop = drag.drop else { return }
+        let result: (text: String, location: Int)?
+        if let row = drag.row {
+            result = currentMover().moveTableRow(row, in: drag.block, before: drop.line)
+        } else {
+            result = currentMover().move(drag.block, to: drop)
+        }
+        guard let (text, location) = result else { return }
         // 変わった部分だけを置き換える（同じ文字が続く前後は触らない）
         let old = textView.string as NSString, new = text as NSString
         var prefix = 0
@@ -140,13 +158,14 @@ final class BlockDragController {
               old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
         let range = NSRange(location: prefix, length: old.length - prefix - suffix)
         textView.replace(range, with: new.substring(with: NSRange(location: prefix, length: new.length - prefix - suffix)),
-                         actionName: "ブロックの移動")
+                         actionName: drag.row == nil ? "ブロックの移動" : "表の行の移動")
         textView.setSelectedRange(NSRange(location: location, length: 0))
         textView.window?.makeFirstResponder(textView)
     }
 
     /// マウスにいちばん近いブロックの境目と、リスト項目なら横位置に合う階層
     private func nearestDrop(to point: NSPoint, for drag: Drag) -> BlockMover.Drop? {
+        if let row = drag.row { return nearestRowDrop(to: point, row: row, table: drag.block) }
         let mover = currentMover()
         var best: (line: Int, y: CGFloat)?
         for line in mover.dropLines {
@@ -174,6 +193,27 @@ final class BlockDragController {
         indicator.frame = NSRect(x: x, y: best.y - 1, width: max(40, textRight - x), height: 2)
         indicator.isHidden = false
         return drop
+    }
+
+    private func nearestRowDrop(to point: NSPoint, row: Int, table: MarkdownBlock) -> BlockMover.Drop? {
+        guard let body = currentMover().tableBodyRows(in: table),
+              let first = fragment(forLine: body.lowerBound), let last = fragment(forLine: body.upperBound)
+        else { indicator.isHidden = true; return nil }
+        let origin = textView.textContainerOrigin.y
+        let top = origin + first.layoutFragmentFrame.minY
+        let bottom = origin + bottom(of: last)
+        guard point.y >= top - 12, point.y <= bottom + 12 else { indicator.isHidden = true; return nil }
+        let candidates = (body.lowerBound...(body.upperBound + 1)).compactMap { line -> (line: Int, y: CGFloat)? in
+            if line == body.upperBound + 1 { return (line, bottom) }
+            guard let fragment = fragment(forLine: line) else { return nil }
+            return (line, origin + fragment.layoutFragmentFrame.minY)
+        }
+        guard let best = candidates.min(by: { abs($0.y - point.y) < abs($1.y - point.y) }),
+              currentMover().moveTableRow(row, in: table, before: best.line) != nil
+        else { indicator.isHidden = true; return nil }
+        indicator.frame = NSRect(x: textLeft, y: best.y - 1, width: max(40, textRight - textLeft), height: 2)
+        indicator.isHidden = false
+        return BlockMover.Drop(line: best.line, indent: nil)
     }
 
     // MARK: - 位置の計算
@@ -221,6 +261,12 @@ final class BlockDragController {
 
     private func bottom(of fragment: NSTextLayoutFragment) -> CGFloat {
         fragment.layoutFragmentFrame.minY + ((fragment as? BlockLayoutFragment)?.decoratedHeight ?? fragment.layoutFragmentFrame.height)
+    }
+
+    private func rowHandlePosition(for line: Int) -> NSPoint? {
+        guard let fragment = fragment(forLine: line) else { return nil }
+        return NSPoint(x: textLeft, y: textView.textContainerOrigin.y
+            + (fragment.layoutFragmentFrame.minY + bottom(of: fragment)) / 2)
     }
 
     /// つまみを置く位置（文字の左端と、先頭行の文字の縦中央）。
