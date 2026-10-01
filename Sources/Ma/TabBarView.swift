@@ -14,6 +14,11 @@ final class TabBarView: NSView {
     var onMove: ((Int, Int) -> Void)?
     /// タブをウィンドウの外で離したとき（タブの位置、離した位置の画面座標）
     var onDetach: ((Int, NSPoint) -> Void)?
+    /// 別のウィンドウのタブバーへの移動。最後の1タブも移せる。
+    var onDrop: ((Int, NSPoint) -> Bool)?
+    var onDragUpdate: ((NSPoint) -> Void)?
+    var onDragEnd: (() -> Void)?
+    var dropIndex: Int? { didSet { needsDisplay = true } }
     var onNewTab: (() -> Void)?
     var canGoBack = false { didSet { needsDisplay = true } }
     var canGoForward = false { didSet { needsDisplay = true } }
@@ -36,7 +41,7 @@ final class TabBarView: NSView {
     private var pressed: Target?
     private struct Drag {
         var index: Int
-        let startX: CGFloat
+        let startPoint: NSPoint
         var offset: CGFloat = 0
         var moved = false
         /// ウィンドウの外にいる（離すと分離する）
@@ -130,6 +135,11 @@ final class TabBarView: NSView {
         }
         if titles.indices.contains(selectedIndex), selectedIndex != drag?.index { drawTab(selectedIndex) }
         if let drag { drawTab(drag.index) }
+        if let dropIndex {
+            NSColor.controlAccentColor.setFill()
+            CGRect(x: tabsStart + CGFloat(dropIndex) * tabWidth - 1, y: tabTop,
+                   width: 2, height: bounds.height - tabTop).fill()
+        }
         drawButton(in: newTabRect, highlighted: hovered == .newTab, symbol: "plus")
         if let sidebarRect { drawSidebarButton(in: sidebarRect, highlighted: hovered == .sidebar) }
         drawButton(in: backRect, highlighted: canGoBack && hovered == .back, symbol: "chevron.left", enabled: canGoBack)
@@ -247,7 +257,7 @@ final class TabBarView: NSView {
         // タイトルバーの高さ（上端から 28pt）の中は、mouseDown がこのビューに届いても、ウィンドウサーバーが同時にウィンドウを動かしてしまう。
         // mouseDownCanMoveWindow はタイトルバーの領域に重ねた本文側のビューには効かない。
         // タブやボタンの上にいる間だけウィンドウを動かせないようにし、何もないところでは従来どおり performDrag で動かす
-        window?.isMovable = target == nil
+        window?.isMovable = target == nil && drag == nil
         guard target != hovered else { return }
         hovered = target
         needsDisplay = true
@@ -265,7 +275,7 @@ final class TabBarView: NSView {
         switch target(at: point) {
         case .tab(let index)?:
             onSelect?(index)
-            drag = Drag(index: index, startX: point.x)
+            drag = Drag(index: index, startPoint: point)
         case let target?:
             pressed = target
         case nil:
@@ -279,18 +289,20 @@ final class TabBarView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         guard var drag else { return }
-        let x = convert(event.locationInWindow, from: nil).x
-        drag.offset = x - drag.startX
-        if abs(drag.offset) > 3 { drag.moved = true }
+        let point = convert(event.locationInWindow, from: nil)
+        let screenPoint = window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+        drag.offset = point.x - drag.startPoint.x
+        if hypot(drag.offset, point.y - drag.startPoint.y) > 3 { drag.moved = true }
         guard drag.moved else { return }
         // ウィンドウの外ではタブの絵をマウスに付けて、並べ替えはしない
-        let outside = canDetach && window.map { !$0.frame.contains(NSEvent.mouseLocation) } == true
+        onDragUpdate?(screenPoint)
+        let outside = (canDetach || onDrop != nil) && !bounds.contains(point)
         if outside != drag.outside {
             drag.outside = outside
             if outside { showDragPreview(for: drag.index) } else { hideDragPreview() }
         }
         if outside {
-            moveDragPreview()
+            moveDragPreview(to: screenPoint)
             self.drag = drag
             needsDisplay = true
             return
@@ -302,7 +314,7 @@ final class TabBarView: NSView {
         if destination != source {
             // 入れ替えた先の位置を起点にし直し、タブがマウスの下に留まるようにする
             let shift = CGFloat(destination - source) * tabWidth
-            drag = Drag(index: destination, startX: drag.startX + shift, offset: drag.offset - shift, moved: true)
+            drag = Drag(index: destination, startPoint: NSPoint(x: drag.startPoint.x + shift, y: drag.startPoint.y), offset: drag.offset - shift, moved: true)
         }
         self.drag = drag
         if destination != source { onMove?(source, destination) }
@@ -312,10 +324,21 @@ final class TabBarView: NSView {
     override func mouseUp(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         hideDragPreview()
-        if let drag, drag.outside, canDetach {
+        onDragEnd?()
+        let screenPoint = window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+        if let drag, drag.moved, onDrop?(drag.index, screenPoint) == true {
             self.drag = nil
+            pressed = nil
+            setHovered(nil)
             needsDisplay = true
-            onDetach?(drag.index, NSEvent.mouseLocation)
+            return
+        }
+        if let drag, drag.moved, canDetach, window.map({ !$0.frame.contains(screenPoint) }) == true {
+            self.drag = nil
+            pressed = nil
+            setHovered(nil)
+            needsDisplay = true
+            onDetach?(drag.index, screenPoint)
             return
         }
         if let pressed, target(at: point) == pressed {
@@ -332,6 +355,14 @@ final class TabBarView: NSView {
         drag = nil
         setHovered(target(at: point))
         needsDisplay = true
+    }
+
+    /// 画面座標の位置がこのタブバーにあれば、挿入するタブの位置を返す。
+    func insertionIndex(at screenPoint: NSPoint) -> Int? {
+        guard let window else { return nil }
+        let point = convert(window.convertPoint(fromScreen: screenPoint), from: nil)
+        guard bounds.contains(point) else { return nil }
+        return min(titles.count, max(0, Int(((point.x - tabsStart) / tabWidth + 0.5).rounded(.down))))
     }
 
     // MARK: - 分離
@@ -358,9 +389,8 @@ final class TabBarView: NSView {
     }
 
     /// タブの左寄りをマウスの下に置く
-    private func moveDragPreview() {
+    private func moveDragPreview(to mouse: NSPoint = NSEvent.mouseLocation) {
         guard let dragPreview else { return }
-        let mouse = NSEvent.mouseLocation
         dragPreview.setFrameOrigin(NSPoint(x: mouse.x - 24, y: mouse.y - dragPreview.frame.height / 2))
     }
 

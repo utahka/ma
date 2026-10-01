@@ -9,6 +9,9 @@ let package = Package(
         .package(url: "https://github.com/jpsim/Yams.git", from: "6.2.0"),
     ],
     targets: [
-        .executableTarget(name: "Ma", dependencies: ["Yams"], path: "Sources/Ma")
+        .executableTarget(name: "Ma", dependencies: ["Yams"], path: "Sources/Ma"),
+        .testTarget(name: "MaTests", dependencies: ["Ma"], path: "Tests",
+                    exclude: ["AICommentSelectionTests.swift", "TableRowMoveTests.swift"],
+                    sources: ["TabTransferTests.swift"])
     ]
 )
