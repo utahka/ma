@@ -8,8 +8,6 @@ struct SlashCommand {
         case linePrefix(String)
         /// `/…` の位置に文字を入れる。`block` なら前後の文字と別の行にする。`selection` の位置が文字数を超えるときは末尾
         case insert(text: () -> String, selection: NSRange, block: Bool, blankLineAbove: Bool = false)
-        /// 行を箇条書きにし、1段深い空の子の項目を付ける（子を持つので ▸/▾ で折りたためる）
-        case toggleList
     }
 
     let title: String
@@ -28,7 +26,8 @@ struct SlashCommand {
         SlashCommand(title: "箇条書き", hint: "-", symbol: "list.bullet", keywords: ["bullet", "list", "ul", "kajougaki"], action: .linePrefix("- ")),
         SlashCommand(title: "番号付きリスト", hint: "1.", symbol: "list.number", keywords: ["numbered", "ol", "list", "bangou"], action: .linePrefix("1. ")),
         SlashCommand(title: "チェックリスト", hint: "- [ ]", symbol: "checklist", keywords: ["todo", "task", "checkbox", "checklist"], action: .linePrefix("- [ ] ")),
-        SlashCommand(title: "トグルリスト", hint: "- ▸", symbol: "list.triangle", keywords: ["toggle", "fold", "toguru"], action: .toggleList),
+        SlashCommand(title: "トグル", hint: "> [!toggle]", symbol: "list.triangle", keywords: ["toggle", "fold", "toguru"],
+                     action: .insert(text: { "> [!toggle]- \n> " }, selection: NSRange(location: 13, length: 0), block: true)),
         SlashCommand(title: "引用", hint: ">", symbol: "text.quote", keywords: ["quote", "blockquote", "inyou"], action: .linePrefix("> ")),
         SlashCommand(title: "コールアウト", hint: "> [!note]", symbol: "exclamationmark.bubble", keywords: ["callout", "note", "tip"],
                      action: .insert(text: { "> [!note]\n> " }, selection: NSRange(location: 12, length: 0), block: true)),
@@ -74,10 +73,6 @@ struct SlashCommand {
         let after = text.substring(with: NSRange(location: caret, length: lineEnd - caret))
 
         switch action {
-        case .toggleList:
-            let edit = Self.replacingLinePrefix(with: "- ", line: line, lineEnd: lineEnd, before: before, after: after)
-            let unit = BlockMover.indentUnit(in: text.components(separatedBy: "\n"))
-            return (edit.range, edit.replacement + "\n" + edit.indent + unit + "- ", edit.selection)
         case .linePrefix(let marker):
             let edit = Self.replacingLinePrefix(with: marker, line: line, lineEnd: lineEnd, before: before, after: after)
             return (edit.range, edit.replacement, edit.selection)

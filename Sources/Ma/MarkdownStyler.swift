@@ -35,6 +35,8 @@ struct MarkdownStyler {
     private let wikiLink = Self.regex(#"\[\[([^\]|\n]+)(\|[^\]\n]+)?\]\]"#)
     private let link = Self.regex(#"\[([^\]\n]+)\]\(([^)\n]+)\)"#)
     private let calloutHeader = Self.regex(#"^>[ \t]?\[!([A-Za-z-]+)\]([+-])?[ \t]*(.*)$"#)
+    /// トグルの見出し行。1 は `+`/`-`、2 はタイトル
+    private let toggleHeader = Self.regex(#"^>[ \t]?\[!toggle\]([+-])?[ \t]*(.*)$"#, options: [.caseInsensitive])
     /// コールアウトのタイトルの先頭の `[ ]` `[-]` `[x]`。1 は括弧の中の文字
     private let calloutTitleCheckbox = Self.regex(#"^\[([ xX-])\](?=[ \t]|$)"#)
     private let tableRow = Self.regex(#"^[ \t]*\|"#)
@@ -57,16 +59,16 @@ struct MarkdownStyler {
     /// `draggedWidths` は列幅をドラッグ中の表の幅。区切り行の位置で表を特定し、区切り行から読んだ幅の代わりに使う。
     /// `frontmatter` の範囲は文字を隠し、最初の行の高さを `height` にして、そこにプロパティ欄を重ねられるようにする。
     /// `calloutIcons` が false ならコールアウトのタイトルの左のアイコンを描かない。
-    /// `expandedCallouts` は開閉の印で開いた `[!note]-` の見出し行の先頭で、カーソルが外にあってもたたまない。
+    /// `flippedCallouts` は開閉の印で、ファイルの `-`/`+` と逆の状態にした見出し行の先頭。
+    /// `[!note]-` はカーソルが外にあっても開いたままにし、トグル（`[!toggle]`）は開いているものをたたむ。
     /// `selection` は選択範囲。表の1つのセルに収まっていれば、そのセルを表の形のまま編集できるように並べる
-    /// `collapsedLists` はたたんで見せるトグル。子の行を高さのない行にして隠し、最初の行に ▸ を描かせる
     @discardableResult
     func apply(
         to storage: NSTextStorage, activeRange: NSRange, availableWidth: CGFloat, sourceMode: Bool,
         selection: NSRange? = nil,
         draggedWidths: (separator: Int, widths: [CGFloat])? = nil,
         frontmatter: (range: NSRange, height: CGFloat)? = nil,
-        calloutIcons: Bool = true, expandedCallouts: Set<Int> = [], collapsedLists: [ListToggle] = []
+        calloutIcons: Bool = true, flippedCallouts: Set<Int> = []
     ) -> [TableLayout] {
         let text = storage.string
         let string = text as NSString
@@ -88,7 +90,6 @@ struct MarkdownStyler {
         }
         func isActive(_ range: NSRange) -> Bool { NSIntersectionRange(range, activeRange).length > 0 }
 
-        var tables: [TableLayout] = []
         var index = 0
         if let frontmatter {
             let hidden = lines.prefix { NSMaxRange($0.full) <= NSMaxRange(frontmatter.range) }
@@ -101,18 +102,35 @@ struct MarkdownStyler {
             }
             index = hidden.count
         }
-        var foldedLines = IndexSet()
-        for toggle in collapsedLists { foldedLines.insert(integersIn: toggle.hidden.location..<NSMaxRange(toggle.hidden)) }
-        let foldStarts = Dictionary(collapsedLists.map { ($0.start, $0) }, uniquingKeysWith: { first, _ in first })
+        var context = Context(text: text, storage: storage, isActive: isActive, draggedWidths: draggedWidths, selection: selection,
+                              calloutIcons: calloutIcons, flippedCallouts: flippedCallouts)
+        styleLines(Array(lines[index...]), availableWidth: availableWidth, context: &context)
+        return context.tables
+    }
+
+    /// 行のまとまりを装飾するときに共通で使うもの
+    private struct Context {
+        let text: String
+        let storage: NSTextStorage
+        let isActive: (NSRange) -> Bool
+        let draggedWidths: (separator: Int, widths: [CGFloat])?
+        let selection: NSRange?
+        let calloutIcons: Bool
+        let flippedCallouts: Set<Int>
+        var tables: [TableLayout] = []
+    }
+
+    /// 行を順に装飾する。トグルの中身は `>` を1段外した行として、ここに戻して装飾する
+    private func styleLines(_ lines: [Line], availableWidth: CGFloat, context: inout Context) {
+        let text = context.text
+        let string = text as NSString
+        let storage = context.storage
+        let isActive = context.isActive
+        var index = 0
         while index < lines.count {
             let line = lines[index]
             let active = isActive(line.full)
 
-            if foldedLines.contains(line.full.location) {
-                hideFoldedLine(line, in: storage)
-                index += 1
-                continue
-            }
             if let end = embedEnd(from: index, in: lines, text: text),
                !isActive(line.full.union(lines[end].full)),
                styleEmbed(Array(lines[index...end]), text: text, in: storage) {
@@ -130,8 +148,8 @@ struct MarkdownStyler {
             }
             if let end = tableEnd(from: index, in: lines, text: text) {
                 let block = Array(lines[index..<end])
-                tables.append(styleTable(block, text: text, in: storage, availableWidth: availableWidth,
-                                         draggedWidths: draggedWidths, selection: selection, isActive: isActive))
+                context.tables.append(styleTable(block, text: text, in: storage, availableWidth: availableWidth,
+                                                 draggedWidths: context.draggedWidths, selection: context.selection, isActive: isActive))
                 index = end
                 continue
             }
@@ -139,8 +157,13 @@ struct MarkdownStyler {
                 var end = index + 1
                 while end < lines.count, quote.firstMatch(in: text, range: lines[end].content) != nil { end += 1 }
                 let block = Array(lines[index..<end])
-                styleQuoteBlock(block, text: text, in: storage, blockActive: isActive(block.first!.full.union(block.last!.full)),
-                                showsIcon: calloutIcons, expanded: expandedCallouts.contains(block[0].full.location), isActive: isActive)
+                if let header = toggleHeader.firstMatch(in: text, range: block[0].content) {
+                    styleToggle(block, header: header, availableWidth: availableWidth, context: &context)
+                } else {
+                    styleQuoteBlock(block, text: text, in: storage, blockActive: isActive(block.first!.full.union(block.last!.full)),
+                                    showsIcon: context.calloutIcons, expanded: context.flippedCallouts.contains(block[0].full.location),
+                                    isActive: isActive)
+                }
                 index = end
                 continue
             }
@@ -154,16 +177,79 @@ struct MarkdownStyler {
             }
             styleBlock(text, line: line.content, in: storage, active: active)
             styleInline(text, line: line.content, in: storage, active: active)
-            if let toggle = foldStarts[line.full.location] {
-                storage.addAttribute(.maBlock, value: ListFoldDecoration(indentLength: toggle.indentLength), range: line.full)
-            }
             index += 1
         }
-        return tables
     }
 
-    /// たたんだトグルの子の行。文字を隠し、高さと前後の余白をなくす
-    private func hideFoldedLine(_ line: Line, in storage: NSTextStorage) {
+    // MARK: - トグル
+
+    /// `> [!toggle]- タイトル` を、枠も背景もない Notion のトグルの形にする。行頭に ▸/▾ を描き、中身は少し字下げする。
+    /// 中身の行は `>` を1段外して通常の行と同じく装飾するので、段落・リスト・表・コールアウト・入れ子のトグルをそのまま見せられる。
+    /// `-` のトグルは、開閉の印で開くかカーソルが中身の行に入るまでたたむ（見出し行にカーソルがあってもたたんだまま）
+    private func styleToggle(_ block: [Line], header: NSTextCheckingResult, availableWidth: CGFloat, context: inout Context) {
+        let text = context.text
+        let string = text as NSString
+        let storage = context.storage
+        let first = block[0]
+        let body = Array(block.dropFirst())
+        let contentActive = body.contains { context.isActive($0.full) }
+        let sign = header.range(at: 1)
+        let folded = sign.location != NSNotFound && string.substring(with: sign) == "-"
+        let collapsed = !body.isEmpty && folded != context.flippedCallouts.contains(first.full.location) && !contentActive
+
+        // 見出し行。記号を隠し、タイトルは本文と同じ字で ▸/▾ の右に置く
+        let active = context.isActive(first.full)
+        let title = header.range(at: 2)
+        marker(NSRange(location: first.content.location, length: title.location - first.content.location), in: storage, active: active)
+        styleInline(text, line: title, in: storage, active: active)
+        let style = paragraphStyle.mutableCopy() as! NSMutableParagraphStyle
+        style.firstLineHeadIndent = ToggleBlock.indent
+        style.headIndent = ToggleBlock.indent
+        style.paragraphSpacing = collapsed || body.isEmpty ? 6 : 2
+        storage.addAttributes([
+            .paragraphStyle: style,
+            .maBlock: ToggleDecoration(collapsed: collapsed || body.isEmpty && folded,
+                                       placeholder: title.length == 0 && !active ? "トグル" : nil),
+        ], range: first.full)
+
+        if collapsed {
+            for line in body { hideLine(line, in: storage) }
+            return
+        }
+        // 中身の行。`>` を1段外した行として装飾してから、外した `>` を隠し、全体を字下げする
+        let inner = body.map { line -> Line in
+            let prefix = quote.firstMatch(in: text, range: line.content)!.range
+            return Line(full: line.full, content: NSRange(location: NSMaxRange(prefix), length: NSMaxRange(line.content) - NSMaxRange(prefix)))
+        }
+        styleLines(inner, availableWidth: availableWidth - ToggleBlock.indent, context: &context)
+        for line in inner {
+            indent(line, by: ToggleBlock.indent, in: storage)
+            marker(NSRange(location: line.full.location, length: line.content.location - line.full.location),
+                   in: storage, active: context.isActive(line.full))
+        }
+    }
+
+    /// トグルの中身の行を字下げする。行頭の位置・タブ位置・右端（先頭から測る指定のとき）をずらし、
+    /// 表や枠を描くフラグメントにも字下げの幅を伝える
+    private func indent(_ line: Line, by inset: CGFloat, in storage: NSTextStorage) {
+        let at = line.content.length > 0 ? line.content.location : line.full.location
+        let current = storage.attribute(.paragraphStyle, at: at, effectiveRange: nil) as? NSParagraphStyle ?? paragraphStyle
+        let style = current.mutableCopy() as! NSMutableParagraphStyle
+        style.firstLineHeadIndent += inset
+        style.headIndent += inset
+        if style.tailIndent > 0 { style.tailIndent += inset }
+        if style.tabStops.isEmpty, style.defaultTabInterval > 0 {
+            // 既定の間隔のタブ位置は行の左端から数えるので、字下げした位置から数える明示の位置にする
+            style.tabStops = (1...16).map { NSTextTab(textAlignment: .left, location: inset + CGFloat($0) * style.defaultTabInterval) }
+        } else {
+            style.tabStops = style.tabStops.map { NSTextTab(textAlignment: $0.alignment, location: $0.location + inset, options: $0.options) }
+        }
+        let nested = storage.attribute(.maInset, at: line.full.location, effectiveRange: nil) as? CGFloat ?? 0
+        storage.addAttributes([.paragraphStyle: style, .maInset: nested + inset], range: line.full)
+    }
+
+    /// たたんだ行。文字を隠し、高さと前後の余白をなくす
+    private func hideLine(_ line: Line, in storage: NSTextStorage) {
         let style = NSMutableParagraphStyle()
         style.minimumLineHeight = 0.01
         style.maximumLineHeight = 0.01
