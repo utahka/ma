@@ -833,7 +833,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     }
 
     /// 選択中の文字に AI 向けのコメントを付ける。`==選択した文字==<!-- AI: コメント -->` と書き、
-    /// Obsidian でもハイライトとして読めるように、複数行は行ごとに記法を付ける
+    /// 複数行は行ごとにハイライトし、コメント本文は末尾に1回だけ保存する
     func addAIComment() {
         guard url != nil, let range = textView.commentableSelection else { NSSound.beep(); return }
         let alert = NSAlert()

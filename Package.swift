@@ -12,6 +12,6 @@ let package = Package(
         .executableTarget(name: "Ma", dependencies: ["Yams"], path: "Sources/Ma"),
         .testTarget(name: "MaTests", dependencies: ["Ma"], path: "Tests",
                     exclude: ["AICommentSelectionTests.swift", "TableRowMoveTests.swift"],
-                    sources: ["TabTransferTests.swift"])
+                    sources: ["TabTransferTests.swift", "AICommentStylingTests.swift"])
     ]
 )

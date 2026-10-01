@@ -45,6 +45,8 @@ struct MarkdownStyler {
     /// `==選択した文字==<!-- AI: コメント -->`。1 は選んだ文字、2 はコメント、3 は `<!-- … -->` 全体
     private let aiComment = Self.regex(#"==(?=\S)((?:(?!==)[^\n])+?)(?<=\S)==(<!--\s*AI:\s*([^\n]*?)\s*-->)"#)
 
+    private var commentGroups: [AICommentSelection.Group] = []
+
     private struct Line {
         let full: NSRange
         let content: NSRange
@@ -104,7 +106,9 @@ struct MarkdownStyler {
         }
         var context = Context(text: text, storage: storage, isActive: isActive, draggedWidths: draggedWidths, selection: selection,
                               calloutIcons: calloutIcons, flippedCallouts: flippedCallouts)
-        styleLines(Array(lines[index...]), availableWidth: availableWidth, context: &context)
+        var styler = self
+        styler.commentGroups = AICommentSelection.groups(in: text)
+        styler.styleLines(Array(lines[index...]), availableWidth: availableWidth, context: &context)
         return context.tables
     }
 
@@ -913,6 +917,14 @@ struct MarkdownStyler {
                 with: String(repeating: "\u{FFFC}", count: match.range.length)
             )
         }
+        // 複数行コメントの範囲記号と本文を隠し、コメント内容を他の記法として読ませない。
+        for group in commentGroups {
+            for range in group.markers where NSIntersectionRange(range, line).length == range.length {
+                marker(range, in: storage, active: active)
+                masked.replaceCharacters(in: NSRange(location: range.location - line.location, length: range.length),
+                                         with: String(repeating: "\u{FFFC}", count: range.length))
+            }
+        }
         // AI へのコメントは、選んだ文字をハイライトし、コメントは隠してホバーでポップオーバーに出す。コメントの中は他の記法として読まない。
         // 選んだ文字の `==…==` に通常のハイライトの黄色が重ならないよう、ハイライトは AI へのコメント全体を塗りつぶした行で探す
         let highlightMasked = NSMutableString(string: masked)
@@ -953,7 +965,13 @@ struct MarkdownStyler {
         }
         for match in highlight.matches(in: highlightMasked as String, range: NSRange(location: 0, length: highlightMasked.length)) {
             let range = match.range.offset(by: line.location)
-            storage.addAttribute(.backgroundColor, value: NSColor.maHighlight, range: range)
+            let body = NSRange(location: range.location + 2, length: range.length - 4)
+            if let group = commentGroups.first(where: { $0.bodies.contains(body) }) {
+                storage.addAttribute(.backgroundColor, value: NSColor.maAIComment, range: body)
+                if !active { storage.addAttribute(.maAIComment, value: group.comment, range: body) }
+            } else {
+                storage.addAttribute(.backgroundColor, value: NSColor.maHighlight, range: range)
+            }
             wrapMarkers(range, length: 2, in: storage, active: active)
         }
         for match in matches(wikiLink) {
