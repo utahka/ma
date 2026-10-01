@@ -161,6 +161,11 @@ final class Vault {
     func leaveFolder() {
         saveNow()
         folder.remove(self)
+        if folder.vaults.isEmpty {
+            folder.watcher?.stop()
+            folder.watcher = nil
+            folder.retryTask?.cancel()
+        }
     }
 
     /// 同じフォルダを開いているすべてのウィンドウに知らせる
@@ -563,6 +568,11 @@ final class Vault {
             rescan()
         }
         return url
+    }
+
+    /// ウィキリンク候補用の既存ノート。名前が重複しても解決できるよう vault からのパスを返す。
+    func wikiLinkPaths() -> [String] {
+        FileNode.notes(in: tree).compactMap { relativePath(of: $0).map { ($0 as NSString).deletingPathExtension } }
     }
 
     /// 編集のたびに呼ばれる。0.5 秒入力が止まったら保存する

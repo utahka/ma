@@ -612,6 +612,9 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     /// 最後に保存へ回した本文。取り消し・やり直しで変わったかどうかの判定に使う
     private var reportedText = ""
     /// `/` の入力補助の一覧
+    private let wikiMenu = SlashMenu()
+    var wikiLinkPaths: () -> [String] = { [] }
+    private var dismissedWikiStart: Int?
     private let slashMenu = SlashMenu()
     /// 一覧を出している `/` の位置
     private var slashLocation: Int?
@@ -654,6 +657,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.onColumnDrag = { [weak self] in self?.restyle(force: true) }
         textView.onToggleFold = { [weak self] header in self?.toggleFold(at: header) }
         setUpProperties()
+        wikiMenu.onChoose = { [weak self] command in self?.applyWikiLink(command.title) }
         slashMenu.onChoose = { [weak self] command in self?.applySlashCommand(command) }
         // 取り消し・やり直しでは textDidChange が呼ばれないことがあるので、ここでも保存と装飾をやり直す。
         // 取り消し履歴はウインドウで共有しているので、ほかのタブの取り消しでも呼ばれる（本文が変わったときだけ扱う）
@@ -674,6 +678,10 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(closeSlashMenu),
                                                name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(closeSlashMenu),
+                                               name: NSWindow.didResignKeyNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(closeWikiMenu),
+                                               name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
+        NotificationCenter.default.addObserver(self, selector: #selector(closeWikiMenu),
                                                name: NSWindow.didResignKeyNotification, object: nil)
         // AI へのコメントの吹き出しも、スクロールやウインドウの切り替えで文字から離れるので閉じる
         NotificationCenter.default.addObserver(textView, selector: #selector(EditorTextView.closeCommentPopover),
@@ -702,6 +710,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
             return
         }
         closeSlashMenu()
+        closeWikiMenu()
+        dismissedWikiStart = nil
         url = document?.url
         placeholder.isHidden = document != nil
         textView.isEditable = document != nil
@@ -763,6 +773,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         }
 
         closeSlashMenu()
+        closeWikiMenu()
         shiftFlippedCallouts(replacing: range, with: replacement)
         storage.replaceCharacters(in: range, with: replacement)
         textView.textDidReload()
@@ -862,6 +873,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         if let url { onChange?(url, textView.string) }
         restyle(force: true)
         updateSlashMenu()
+        dismissedWikiStart = nil
+        updateWikiMenu()
     }
 
     @objc private func textDidChangeByUndo() {
@@ -871,10 +884,58 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     func textViewDidChangeSelection(_ notification: Notification) {
         restyle(force: false)
+        if !textView.hasMarkedText() { updateWikiMenu() }
         if let slashLocation, !textView.hasMarkedText() {
             let selection = textView.selectedRange()
             if selection.length > 0 || selection.location <= slashLocation { closeSlashMenu() }
         }
+    }
+
+    // MARK: - ウィキリンクの入力補助
+
+    private func updateWikiMenu() {
+        guard !textView.hasMarkedText(), let window = view.window,
+              let context = WikiLinkCompletion.context(in: textView.string, selection: textView.selectedRange()),
+              context.start != dismissedWikiStart,
+              frontmatter.map({ context.start >= NSMaxRange($0.range) }) ?? true else {
+            wikiMenu.hide()
+            return
+        }
+        let paths = Array(WikiLinkCompletion.matching(context.query, paths: wikiLinkPaths()).prefix(100))
+        guard !paths.isEmpty else { wikiMenu.hide(); return }
+        closeSlashMenu()
+        let commands = paths.map { path in
+            SlashCommand(title: path, hint: "", symbol: "doc.text", keywords: [],
+                         action: .insert(text: { path }, selection: .init(location: 0, length: 0), block: false))
+        }
+        let anchor = textView.firstRect(forCharacterRange: NSRange(location: context.start, length: 2), actualRange: nil)
+        wikiMenu.show(commands, below: anchor, in: window)
+    }
+
+    @objc private func closeWikiMenu() {
+        dismissedWikiStart = WikiLinkCompletion.context(in: textView.string, selection: textView.selectedRange())?.start
+        wikiMenu.hide()
+    }
+
+    private func applyWikiLink(_ path: String) {
+        guard let edit = WikiLinkCompletion.edit(in: textView.string, selection: textView.selectedRange(), path: path) else { return }
+        closeWikiMenu()
+        textView.replace(edit.range, with: edit.text, actionName: "ノートへのリンク")
+        textView.setSelectedRange(NSRange(location: edit.range.location + (edit.text as NSString).length, length: 0))
+        wikiMenu.hide()
+    }
+
+    private func handleWikiMenuCommand(_ selector: Selector) -> Bool {
+        guard wikiMenu.isVisible, !textView.hasMarkedText() else { return false }
+        switch selector {
+        case #selector(NSResponder.moveUp(_:)): wikiMenu.moveSelection(by: -1)
+        case #selector(NSResponder.moveDown(_:)): wikiMenu.moveSelection(by: 1)
+        case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+            if let command = wikiMenu.selectedCommand { applyWikiLink(command.title) }
+        case #selector(NSResponder.cancelOperation(_:)), #selector(NSTextView.complete(_:)): closeWikiMenu()
+        default: return false
+        }
+        return true
     }
 
     // MARK: - スラッシュの入力補助
@@ -1148,6 +1209,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     /// Tab で次のセル、Shift+Tab で前のセル、Enter で下の行、Shift+Enter でセル内の改行（<br>）
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if handleWikiMenuCommand(selector) { return true }
         if handleSlashMenuCommand(selector) { return true }
         if !sourceMode { unfoldToggleBeforeJoining(selector) }
         if !sourceMode, selector == #selector(NSResponder.insertTab(_:))
