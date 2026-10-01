@@ -87,6 +87,13 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         tableView.delegate = self
         tableView.target = self
         tableView.action = #selector(clickRow(_:))
+        tableView.onMiddleClick = { [weak self] row, column in
+            guard let self, self.rows.indices.contains(row), self.tableView.tableColumns.indices.contains(column),
+                  case .note(let note) = self.rows[row],
+                  ["file.name", "file.basename"].contains(self.tableView.tableColumns[column].identifier.rawValue)
+            else { return }
+            self.onOpenNote?(note.url, true)
+        }
         tableView.doubleAction = #selector(doubleClickRow(_:))
         // グループの行は Notion と同じく、表と一緒に流す
         tableView.floatsGroupRows = false
@@ -1120,6 +1127,14 @@ private final class BaseHeaderView: NSTableHeaderView {
 /// グループごとの列の見出しの行で、列の境界のドラッグで幅を、見出しのドラッグで順番を変えられる表
 /// （グループに分けたときは表の上の見出しを出さないので、その代わり）
 private final class BaseTableView: NSTableView {
+    var onMiddleClick: ((Int, Int) -> Void)?
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return super.otherMouseDown(with: event) }
+        let point = convert(event.locationInWindow, from: nil)
+        onMiddleClick?(row(at: point), column(at: point))
+    }
+
     var isHeaderRow: (Int) -> Bool = { _ in false }
     /// グループごとの列の見出しの行を右クリックしたときのメニュー
     var menuForHeaderColumn: (Int) -> NSMenu? = { _ in nil }

@@ -429,6 +429,11 @@ private final class CardTitle: NSTextField {
     override func mouseDown(with event: NSEvent) {
         onClick?(event.modifierFlags.contains(.command))
     }
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return super.otherMouseDown(with: event) }
+        onClick?(true)
+    }
 }
 
 /// 押すとクロージャを呼ぶ領域（グループの見出し）

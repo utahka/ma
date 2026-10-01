@@ -46,13 +46,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     /// 表示中の一覧を記録し、次回の起動でも同じ一覧を出す
     private(set) var mode: Mode = AppDefaults.shared.string(forKey: "sidebarMode").flatMap(Mode.init) ?? .files
     /// 一覧ごとに別のビューにして、切り替えてもフォルダの開閉やスクロール位置を残す
-    private let filesView = NSOutlineView()
-    private let bookmarksView = NSOutlineView()
+    private let filesView = MiddleClickOutlineView()
+    private let bookmarksView = MiddleClickOutlineView()
     private var scrollViews: [Mode: NSScrollView] = [:]
     private var modeButtons: [Mode: NSButton] = [:]
     /// 検索欄に文字があるあいだは、一覧の代わりに名前・パスで絞り込んだファイルを平らに並べる
     private let searchField = NSSearchField()
-    private let searchView = NSOutlineView()
+    private let searchView = MiddleClickOutlineView()
     private var searchScrollView: NSScrollView!
     private var searchResults: [SearchResult] = []
     private var isSearching: Bool { !searchField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -86,7 +86,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         toggle.widthAnchor.constraint(equalToConstant: TrafficLights.sidebarToggleWidth).isActive = true
         toggle.toolTip = "サイドバーを閉じる"
 
-        func makeList(_ outlineView: NSOutlineView) -> NSScrollView {
+        func makeList(_ outlineView: MiddleClickOutlineView) -> NSScrollView {
+            outlineView.onMiddleClick = { [weak self, weak outlineView] row in
+                guard let self, let outlineView, let url = self.noteURL(ofRow: row, in: outlineView) else { return }
+                self.onSelect?(url, true)
+            }
             let column = NSTableColumn(identifier: .init("name"))
             outlineView.addTableColumn(column)
             outlineView.outlineTableColumn = column
@@ -532,5 +536,16 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
+    }
+}
+
+/// 中央クリックは選択を変える前に行を特定し、新しいタブで開く。
+private final class MiddleClickOutlineView: NSOutlineView {
+    var onMiddleClick: ((Int) -> Void)?
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return super.otherMouseDown(with: event) }
+        let row = row(at: convert(event.locationInWindow, from: nil))
+        if row >= 0 { onMiddleClick?(row) }
     }
 }
