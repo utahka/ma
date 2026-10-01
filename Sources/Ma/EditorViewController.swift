@@ -188,8 +188,14 @@ final class EditorTextView: NSTextView {
         closeCommentPopover()
     }
 
+    /// 直近に受けた Return（テンキーの Enter を含む）の keyDown に Shift が付いていたか。
+    /// 日本語入力（IME）を通すとキー入力は入力メソッドの返事を待ってから insertNewline: になり、
+    /// そのときの NSApp.currentEvent がこの keyDown とは限らない（Shift を離したイベントなどに変わる）ので、受けた時点の修飾を覚えておく
+    private(set) var returnKeyHasShift = false
+
     override func keyDown(with event: NSEvent) {
         closeCommentPopover()
+        if event.keyCode == 36 || event.keyCode == 76 { returnKeyHasShift = event.modifierFlags.contains(.shift) }
         super.keyDown(with: event)
     }
 
@@ -1291,7 +1297,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
             } else if row > 0 {
                 moveCaret(to: table, row: row - 1, column: min(columns, table.rows[row - 1].count) - 1)
             }
-        case #selector(NSResponder.insertNewline(_:)) where NSApp.currentEvent?.modifierFlags.contains(.shift) == true,
+        case #selector(NSResponder.insertNewline(_:)) where self.textView.returnKeyHasShift,
              #selector(NSResponder.insertLineBreak(_:)):
             self.textView.replace(NSRange(location: caret, length: 0), with: "<br>", actionName: "セル内の改行")
             // 表示のうえでは改行の直後なので、カーソルは次の行の先頭に出す
@@ -1320,7 +1326,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     /// コールアウトの中で Shift+Enter を押したら、次の行にも同じ深さの `>` を付けてコールアウトの中で改行する
     private func breakCalloutLine(_ selector: Selector, at caret: Int) -> Bool {
-        let shiftReturn = selector == #selector(NSResponder.insertNewline(_:)) && NSApp.currentEvent?.modifierFlags.contains(.shift) == true
+        let shiftReturn = selector == #selector(NSResponder.insertNewline(_:)) && textView.returnKeyHasShift
         guard shiftReturn || selector == #selector(NSResponder.insertLineBreak(_:)),
               let edit = CalloutLineBreak.edit(in: textView.string as NSString, caret: caret)
         else { return false }
@@ -1332,7 +1338,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     /// リスト項目や続きの行で Shift+Enter を押したら、新しい項目を作らずに項目の中で改行する（続きの行を本文の開始位置まで字下げする）
     private func breakListLine(_ selector: Selector, at caret: Int) -> Bool {
-        let shiftReturn = selector == #selector(NSResponder.insertNewline(_:)) && NSApp.currentEvent?.modifierFlags.contains(.shift) == true
+        let shiftReturn = selector == #selector(NSResponder.insertNewline(_:)) && textView.returnKeyHasShift
         guard shiftReturn || selector == #selector(NSResponder.insertLineBreak(_:)),
               let edit = ListLineBreak.edit(in: textView.string as NSString, caret: caret)
         else { return false }
@@ -1345,7 +1351,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     /// リスト項目や続きの行で Enter を押したら次の項目を作る（空の項目ならリストを抜ける）。Shift+Enter は breakListLine
     private func continueList(_ selector: Selector, at caret: Int) -> Bool {
         guard selector == #selector(NSResponder.insertNewline(_:)),
-              NSApp.currentEvent?.modifierFlags.contains(.shift) != true,
+              !textView.returnKeyHasShift,
               var edit = ListContinuation.edit(in: textView.string as NSString, caret: caret)
         else { return false }
         // たたんだトグルの最初の行の末尾では、次の項目を隠した子の行の後ろに作る（手前に作ると、子がその項目に付く）
