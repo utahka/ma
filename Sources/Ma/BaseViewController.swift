@@ -1,6 +1,6 @@
 import AppKit
 
-/// `.base` を開いたタブ。ビューを切り替えて、条件に合うノートを表で見せる（いまは見るだけ）
+/// `.base` を開いたタブ。ビューを切り替えて、条件に合うノートを表かカード（`type: cards`）で見せる
 final class BaseViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     /// vault のノートを読み直す
     var loadNotes: () async -> [NoteRecord] = { [] }
@@ -47,6 +47,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     private let tableView = BaseTableView()
     private lazy var headerView = tableView.headerView
     private let scrollView = NSScrollView()
+    private let cardsView = BaseCardsView()
 
     private static let font = NSFont.systemFont(ofSize: 13)
 
@@ -105,10 +106,15 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .textBackgroundColor
 
+        cardsView.isHidden = true
+        cardsView.onOpenNote = { [weak self] note, newTab in self?.onOpenNote?(note.url, newTab) }
+        cardsView.onCommit = { [weak self] note, key, value, type in self?.commit(note, key, value, type: type) }
+        cardsView.onToggleGroup = { [weak self] value in self?.toggleGroup(value) }
+
         let container = NSView()
         sortEditor.onChange = { [weak self] sort in self?.saveSort(sort) }
         propertiesEditor.onChange = { [weak self] order in self?.saveVisibleColumns(order) }
-        for view in [viewPicker, groupButton, countLabel, messageLabel, scrollView, sortEditor.button, filterButton, propertiesEditor.button] {
+        for view in [viewPicker, groupButton, countLabel, messageLabel, scrollView, cardsView, sortEditor.button, filterButton, propertiesEditor.button] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -133,6 +139,10 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            cardsView.topAnchor.constraint(equalTo: viewPicker.bottomAnchor, constant: 12),
+            cardsView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            cardsView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            cardsView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
@@ -160,6 +170,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     func focus() {
+        guard cardsView.isHidden else { return }
         view.window?.makeFirstResponder(tableView)
     }
 
@@ -207,7 +218,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             return showMessage("ビューがありません")
         }
         let view = base.views[selectedView]
-        guard view.type == "table" else {
+        let isCards = view.type == "cards"
+        guard view.type == "table" || isCards else {
             return showMessage("このビューの種類（\(view.type)）はまだ表示できません")
         }
         do {
@@ -216,7 +228,8 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
             return showMessage("フィルタを評価できません: \(error)")
         }
         messageLabel.isHidden = true
-        scrollView.isHidden = false
+        scrollView.isHidden = isCards
+        cardsView.isHidden = !isCards
         let types = propertyTypes()
         dateColumns = [:]
         for property in view.order {
@@ -240,6 +253,15 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
                                 candidates: propertyCandidates(view, base: base))
         let total = groups.reduce(0) { $0 + $1.notes.count }
         countLabel.stringValue = "\(total) 件"
+        if isCards {
+            let awaiting = groups.flatMap(\.notes).filter {
+                BaseCardsView.isAwaiting($0, layout: cardLayout(view, base: base), types: types)
+            }.count
+            if awaiting > 0 { countLabel.stringValue += "・返事待ち \(awaiting) 件" }
+            updateGroupButton(view, base: base)
+            loadCollapsed()
+            return layOutRows()
+        }
         // 列を足すと表は今の行数のままセルを作ろうとするので、列を作り直すあいだは行を空にしておく
         rows = []
         tableView.reloadData()
@@ -257,6 +279,11 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
     private func layOutRows() {
         guard let base, base.views.indices.contains(selectedView) else { return }
         let groupBy = base.views[selectedView].groupBy
+        if base.views[selectedView].type == "cards" {
+            rows = []
+            tableView.reloadData()
+            return showCards(base.views[selectedView], base: base)
+        }
         rows = groups.flatMap { group -> [Row] in
             guard let value = group.value, let groupBy else { return group.notes.map(Row.note) }
             let title = Row.group(value, property: groupBy.property, count: group.notes.count)
@@ -273,6 +300,31 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         messageLabel.stringValue = message
         messageLabel.isHidden = false
         scrollView.isHidden = true
+        cardsView.isHidden = true
+    }
+
+    // MARK: - カード
+
+    /// カードの上部と下部に出すプロパティ。下部はビューの `ma:` の `body`、なければ `order` のうち型のない文字列（テキスト）のプロパティ。
+    /// 返事の欄は `ma:` の `reply`、なければ下部が2つ以上あるときの最後のもの（`[相談, 返事]` の返事）
+    private func cardLayout(_ view: BaseFile.View, base: BaseFile) -> BaseCardsView.Layout {
+        let order = view.order.isEmpty ? ["file.name"] : view.order
+        let types = propertyTypes()
+        let body = view.cardBody ?? order.filter { property in
+            guard let key = Self.noteKey(property), base.schemas[property] == nil, dateColumns[property] == nil else { return false }
+            return types[key] == nil || types[key] == .text
+        }
+        let top = order.filter { !body.contains($0) && $0 != "file.name" && $0 != "file.basename" }
+        let reply = view.cardReply ?? (body.count >= 2 ? body.last : nil)
+        return BaseCardsView.Layout(top: top, body: body, reply: reply)
+    }
+
+    private func showCards(_ view: BaseFile.View, base: BaseFile) {
+        cardsView.show(BaseCardsView.Content(
+            groups: groups, groupBy: view.groupBy?.property, collapsed: collapsed,
+            layout: cardLayout(view, base: base), schemas: base.schemas, types: propertyTypes(),
+            dateColumns: dateColumns, displayName: { base.displayName(of: $0) }
+        ))
     }
 
     /// 列は order の順。幅は columnSize、なければ 150pt

@@ -51,6 +51,10 @@ struct BaseFile {
         let groupBy: Sort?
         let columnSize: [String: CGFloat]
         let limit: Int?
+        /// カードのビュー（`type: cards`）で、下部に全文で出すプロパティ（ビューの `ma:` の `body`）。書かれていなければ nil
+        var cardBody: [String]? = nil
+        /// カードのビューで人間が書き込むプロパティ（ビューの `ma:` の `reply`）。ほかの `body` があってこれが空なら「返事待ち」にする
+        var cardReply: String? = nil
     }
 
     /// `and` / `or` / `not` の入れ子と、式の文字列
@@ -95,7 +99,10 @@ struct BaseFile {
         displayNames = names
         self.schemas = schemas
         views = try (root["views"] as? [[String: Any]] ?? []).enumerated().map { index, view in
-            try View(
+            let ma = view["ma"] as? [String: Any]
+            // `body: [相談, 返事]` と `body: 相談` の両方を受け付ける
+            let body = ma?["body"].map { ($0 as? [Any] ?? [$0]).map { BaseExpression.propertyID("\($0)") } }
+            return try View(
                 type: view["type"] as? String ?? "table",
                 name: view["name"] as? String ?? "ビュー \(index + 1)",
                 filter: view["filters"].map(Self.filter),
@@ -108,7 +115,9 @@ struct BaseFile {
                         sizes[BaseExpression.propertyID(item.key)] = CGFloat(width)
                     }
                 },
-                limit: view["limit"] as? Int
+                limit: view["limit"] as? Int,
+                cardBody: body,
+                cardReply: ma?["reply"].map { BaseExpression.propertyID("\($0)") }
             )
         }
     }
