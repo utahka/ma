@@ -149,9 +149,10 @@ final class Vault {
 
     /// 分離したウィンドウ用。フォルダ・ファイル一覧・お気に入り・保存待ちの本文は `other` と共有し、タブだけを別に持つ。
     /// 開いているタブは記録しない（起動時に戻すのはメインウィンドウのタブだけ）。コールバックを設定してから `reloadTabs()` で読み込む
-    init(sharingFolderWith other: Vault, tab: Tab, viewState: NoteViewState?) {
+    init(sharingFolderWith other: Vault, tab: Tab, viewState: NoteViewState?, preservingContent: Bool = false) {
         folder = other.folder
         tabs = [tab]
+        if preservingContent { loadedTabs.insert(tab.id) }
         if let viewState { restoringViewStates[tab.id] = viewState }
         folder.add(self)
     }
@@ -471,6 +472,27 @@ final class Vault {
         if index < activeIndex || activeIndex == tabs.count { activeIndex -= 1 }
         tabsDidChange()
         return (tab, state)
+    }
+
+    /// 同じフォルダの別ウィンドウへタブと履歴を移す。最後のタブには空のタブを残す。
+    func transferTab(at index: Int, to destination: Vault, at insertion: Int, preservingContent: Bool) -> Bool {
+        guard destination !== self, destination.folder === folder, tabs.indices.contains(index),
+              insertion >= 0, insertion <= destination.tabs.count else { return false }
+        saveNow()
+        let tab = tabs[index]
+        let state = viewState?(tab.id)
+        loadedTabs.remove(tab.id)
+        restoringViewStates[tab.id] = nil
+        tabs.remove(at: index)
+        if tabs.isEmpty { tabs = [Tab()] }
+        if index < activeIndex || activeIndex == tabs.count { activeIndex -= 1 }
+        destination.tabs.insert(tab, at: insertion)
+        destination.activeIndex = insertion
+        if preservingContent { destination.loadedTabs.insert(tab.id) }
+        else if let state { destination.restoringViewStates[tab.id] = state }
+        tabsDidChange()
+        destination.tabsDidChange()
+        return true
     }
 
     /// 選択中のタブを読み込み、タブの表示を揃え直す（分離したウィンドウを作った直後に使う）

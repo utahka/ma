@@ -136,6 +136,21 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         (contents[tab] as? EditorViewController)?.isComposing == true
     }
 
+    /// コントローラ自体を移すので、取り消し・カーソル・スクロール位置を保持する。
+    func takeContent(for tab: Tab.ID) -> NSViewController? {
+        guard let controller = contents[tab] else { return nil }
+        if shown === controller { shown = nil }
+        discard(tab, controller)
+        return controller
+    }
+
+    func adoptContent(_ controller: NSViewController, for tab: Tab.ID) {
+        addChild(controller)
+        contents[tab] = controller
+        if let editor = controller as? EditorViewController { configure(editor) }
+        if let base = controller as? BaseViewController { configure(base) }
+    }
+
     /// タブの並びと選択に合わせて、タブバーと表示する中身を揃える。閉じたタブの中身は捨てる
     func update(tabs: [Tab], activeIndex: Int, canGoBack: Bool, canGoForward: Bool) {
         tabBar.titles = tabs.map(\.title)
@@ -207,25 +222,33 @@ final class EditorAreaViewController: NSViewController, NSMenuItemValidation {
         let editor = EditorViewController()
         // 読み込み時に空の表示にするので、中身を渡す前に読み込んでおく
         editor.loadViewIfNeeded()
+        configure(editor)
+        return editor
+    }
+
+    private func configure(_ editor: EditorViewController) {
         editor.sourceMode = sourceMode
         editor.showsCalloutIcons = showsCalloutIcons
         editor.onChange = { [weak self] url, text in self?.onChange?(url, text) }
         editor.onOpenLink = { [weak self] target, newTab in self?.onOpenLink?(target, newTab) }
         editor.propertyTypes = { [weak self] in self?.propertyTypes() }
         editor.propertySchemas = { [weak self] url, text in self?.propertySchemas(url, text) ?? [:] }
-        return editor
     }
 
     private func makeBase() -> BaseViewController {
         let base = BaseViewController()
         base.loadViewIfNeeded()
+        configure(base)
+        return base
+    }
+
+    private func configure(_ base: BaseViewController) {
         base.loadNotes = { [weak self] in await self?.loadNotes() ?? [] }
         base.propertyTypes = { [weak self] in self?.propertyTypes()?.recorded ?? [:] }
         base.onOpenNote = { [weak self] url, newTab in self?.onOpenNote?(url, newTab) }
         base.onSetProperty = { [weak self] url, key, value, type in self?.onSetProperty?(url, key, value, type) }
         base.onRenameProperty = { [weak self] urls, key, newKey in self?.onRenameProperty?(urls, key, newKey) }
         base.onSetPropertyType = { [weak self] key, type in self?.propertyTypes()?.set(type, for: key) }
-        return base
     }
 
     @objc func toggleSourceMode(_ sender: Any?) {

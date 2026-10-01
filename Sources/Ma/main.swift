@@ -135,6 +135,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             guard let vault, let editor else { return }
             detachTab(at: index, of: vault, size: editor.view.frame.size, to: point)
         }
+        editor.tabBar.onDragUpdate = { [unowned self, weak editor] point in
+            for area in editorAreas { area.tabBar.dropIndex = nil }
+            if let editor, let (target, insertion) = tabDestination(at: point, excluding: editor) {
+                target.tabBar.dropIndex = insertion
+            }
+        }
+        editor.tabBar.onDragEnd = { [unowned self] in
+            for area in editorAreas { area.tabBar.dropIndex = nil }
+        }
+        editor.tabBar.onDrop = { [unowned self, weak vault, weak editor] index, point in
+            guard let vault, let editor, let (target, insertion) = tabDestination(at: point, excluding: editor),
+                  let destination = vaultForEditor(target), vault.tabs.indices.contains(index) else { return false }
+            let wasLastTab = vault.tabs.count == 1
+            let tab = vault.tabs[index]
+            let controller = editor.takeContent(for: tab.id)
+            if let controller { target.adoptContent(controller, for: tab.id) }
+            guard vault.transferTab(at: index, to: destination, at: insertion, preservingContent: controller != nil) else { return false }
+            target.view.window?.makeKeyAndOrderFront(nil)
+            if wasLastTab, let detached = detachedWindows.first(where: { $0.vault === vault }) {
+                detached.window.close()
+            }
+            return true
+        }
         editor.tabBar.onNewTab = { [weak vault] in vault?.newTab() }
         editor.tabBar.onBack = { [weak vault] in vault?.goBack() }
         editor.tabBar.onForward = { [weak vault] in vault?.goForward() }
@@ -179,15 +202,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     // MARK: - 分離したウィンドウ
 
+    private func vaultForEditor(_ area: EditorAreaViewController) -> Vault? {
+        area === editor ? vault : detachedWindows.first { $0.editor === area }?.vault
+    }
+
+    /// 手前のウィンドウだけを対象にし、本文へのドロップをタブの移動として扱わない。
+    private func tabDestination(at point: NSPoint, excluding source: EditorAreaViewController) -> (EditorAreaViewController, Int)? {
+        guard let top = NSApp.orderedWindows.first(where: {
+            $0.isVisible && !$0.isMiniaturized && !$0.ignoresMouseEvents && $0.frame.contains(point)
+        }), let target = editorAreas.first(where: { $0 !== source && $0.view.window === top }),
+           let insertion = target.tabBar.insertionIndex(at: point) else { return nil }
+        return (target, insertion)
+    }
+
     /// タブをウィンドウの外で離したら、そのタブを新しいウィンドウに移す。ウィンドウはタブがマウスの下に来る位置に置く
     private func detachTab(at index: Int, of source: Vault, size: NSSize, to point: NSPoint) {
+        guard source.tabs.count > 1, source.tabs.indices.contains(index),
+              let sourceEditor = editorAreas.first(where: { vaultForEditor($0) === source }) else { return }
+        let controller = sourceEditor.takeContent(for: source.tabs[index].id)
         guard let (tab, viewState) = source.detachTab(at: index) else { return }
         let size = NSSize(width: max(size.width, 480), height: max(size.height, 320))
         let frame = NSRect(x: point.x - 160, y: point.y + TabBarView.height / 2 - size.height, width: size.width, height: size.height)
-        let vault = Vault(sharingFolderWith: source, tab: tab, viewState: viewState)
+        let vault = Vault(sharingFolderWith: source, tab: tab, viewState: viewState, preservingContent: controller != nil)
         let detached = DetachedWindow(vault: vault, frame: frame)
         let editor = detached.editor
         connect(editor, to: vault, in: detached.window)
+        if let controller { editor.adoptContent(controller, for: tab.id) }
         vault.onTreeChange = { [weak editor] in editor?.notesDidChange() }
         vault.onBookmarksChange = { [unowned self, weak vault, weak editor] in
             if let vault, let editor { updateNoteHeader(of: editor, vault: vault) }

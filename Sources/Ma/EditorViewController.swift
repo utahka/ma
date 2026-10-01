@@ -41,6 +41,9 @@ final class EditorTextView: NSTextView {
     private var hoverTrackingArea: NSTrackingArea?
     private let addRowButton = NSButton()
     private var hoveredTable: TableLayout?
+    private let editorUndoManager = UndoManager()
+    override var undoManager: UndoManager? { editorUndoManager }
+
     private lazy var blockDrag = BlockDragController(textView: self)
     private let commentPopover = AICommentPopover()
     let propertiesView = PropertiesView()
