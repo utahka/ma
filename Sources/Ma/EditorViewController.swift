@@ -54,34 +54,7 @@ final class EditorTextView: NSTextView {
     private var hoveredTable: TableLayout?
     private lazy var blockDrag = BlockDragController(textView: self)
     private let commentPopover = AICommentPopover()
-    private let listToggleButton = ListToggleButton()
     let propertiesView = PropertiesView()
-
-    /// 本文中のトグルと、たたんで見せているかどうか。装飾をかけ直すたびに EditorViewController が入れる
-    var listToggles: [(toggle: ListToggle, collapsed: Bool)] = [] {
-        didSet {
-            // 開閉しても項目の位置は変わらないので、出しているボタンは向きだけ合わせる
-            guard let start = listToggleButton.start else { return }
-            if let entry = listToggles.first(where: { $0.toggle.start == start }) {
-                listToggleButton.collapsed = entry.collapsed
-            } else {
-                hideListToggleButton()
-            }
-        }
-    }
-
-    /// トグルの ▸/▾ を押したとき。引数は項目の先頭の位置
-    var onToggleListFold: ((Int) -> Void)?
-
-    /// その位置から始まる行が、トグルの最初の行か。つまみを ▸/▾ の左へずらすのに使う
-    func isListToggle(startingAt offset: Int) -> Bool {
-        listToggles.contains { $0.toggle.start == offset }
-    }
-
-    /// その位置が、たたんで隠した行の中か。ドラッグの落とし先から外すのに使う
-    func isFolded(_ offset: Int) -> Bool {
-        listToggles.contains { $0.collapsed && $0.toggle.hidden.location <= offset && offset <= NSMaxRange($0.toggle.hidden) }
-    }
 
     // init を上書きすると init(usingTextLayoutManager:) が継承されなくなるので、配置された時点で準備する
     override func viewDidMoveToSuperview() {
@@ -98,13 +71,6 @@ final class EditorTextView: NSTextView {
         addSubview(addRowButton)
         addSubview(blockDrag.handle)
         addSubview(blockDrag.indicator)
-        listToggleButton.isHidden = true
-        listToggleButton.toolTip = "折りたたむ／開く"
-        listToggleButton.onClick = { [unowned self] in
-            guard let start = listToggleButton.start else { return }
-            onToggleListFold?(start)
-        }
-        addSubview(listToggleButton)
         propertiesView.isHidden = true
         addSubview(propertiesView)
         NotificationCenter.default.addObserver(self, selector: #selector(embedImageDidLoad(_:)), name: .maEmbedImageLoaded, object: nil)
@@ -132,7 +98,6 @@ final class EditorTextView: NSTextView {
         didSet {
             blockDrag.textDidChange()
             closeCommentPopover()
-            hideListToggleButton()
         }
     }
 
@@ -172,7 +137,6 @@ final class EditorTextView: NSTextView {
         hideAddRowButton()
         blockDrag.textDidChange()
         closeCommentPopover()
-        hideListToggleButton()
     }
 
     /// 外部の変更で本文を直接差し替えたとき。編集ではないので didChangeText は呼ばず（保存し直さない）、ブロックの読み直しだけ行う
@@ -224,7 +188,6 @@ final class EditorTextView: NSTextView {
         let point = convert(event.locationInWindow, from: nil)
         updateAddRowButton(at: point)
         blockDrag.hover(at: point)
-        updateListToggleButton(at: point)
         updateCommentPopover(at: point)
         if blockDrag.isOnHandle(point) {
             NSCursor.openHand.set()
@@ -239,7 +202,6 @@ final class EditorTextView: NSTextView {
         super.mouseExited(with: event)
         hideAddRowButton()
         blockDrag.hideHandle()
-        hideListToggleButton()
         closeCommentPopover()
     }
 
@@ -476,11 +438,13 @@ final class EditorTextView: NSTextView {
     /// カーソルがコールアウトの中にあるあいだは、たたまずに開いたままにしているので押せない
     private func foldButton(at point: NSPoint) -> Int? {
         let location = containerPoint(point)
-        guard let fragment = fragment(at: location), let box = fragment.decoration as? BoxDecoration,
+        guard let fragment = fragment(at: location),
               fragment.foldButtonRect()?.offsetBy(dx: 0, dy: fragment.layoutFragmentFrame.minY).contains(location) == true,
               let content = textLayoutManager?.textContentManager
         else { return nil }
         let header = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+        // トグルは見出し行や中身にカーソルがあっても開閉できる
+        guard let box = fragment.decoration as? BoxDecoration else { return header }
         let string = self.string as NSString
         var end = header
         while end < string.length, string.character(at: end) == 0x3E {
@@ -569,34 +533,6 @@ final class EditorTextView: NSTextView {
         commentPopover.close()
     }
 
-    // MARK: - トグルの開閉ボタン
-
-    /// マウスのある行がトグルの最初の行なら、記号の左に ▾（たたんでいれば ▸ の当たり判定）を出す
-    private func updateListToggleButton(at point: NSPoint) {
-        guard columnDrag == nil, !blockDrag.isDragging, !hasMarkedText() else { return hideListToggleButton() }
-        if !listToggleButton.isHidden, listToggleButton.frame.insetBy(dx: -4, dy: -4).contains(point) { return }
-        let location = containerPoint(point)
-        guard let layoutManager = textLayoutManager, let content = layoutManager.textContentManager,
-              let fragment = layoutManager.textLayoutFragment(for: CGPoint(x: 1, y: location.y)) as? BlockLayoutFragment,
-              location.y <= fragment.layoutFragmentFrame.maxY
-        else { return hideListToggleButton() }
-        let start = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
-        guard let entry = listToggles.first(where: { $0.toggle.start == start }),
-              let rect = fragment.listToggleRect(indentLength: entry.toggle.indentLength)
-        else { return hideListToggleButton() }
-        let origin = textContainerOrigin
-        listToggleButton.frame = rect.offsetBy(dx: origin.x + fragment.layoutFragmentFrame.minX,
-                                               dy: origin.y + fragment.layoutFragmentFrame.minY)
-        listToggleButton.start = start
-        listToggleButton.collapsed = entry.collapsed
-        listToggleButton.isHidden = false
-    }
-
-    private func hideListToggleButton() {
-        listToggleButton.isHidden = true
-        listToggleButton.start = nil
-    }
-
     // MARK: - 行の追加ボタン
 
     /// 表の上にマウスがあるあいだ、表の下端の中央にボタンを出す
@@ -670,17 +606,11 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     private var slashLocation: Int?
     /// 直前の編集で打った `/` の位置。textDidChange で一覧を出すか決める
     private var typedSlash: Int?
-    /// 開閉の印で開いた `[!note]-` の見出し行の先頭。カーソルが外にあってもたたまない
-    private var expandedCallouts: Set<Int> = []
-    /// 本文中のトグル（子の行を持つリスト項目）と、それを求めたときの本文
-    private var listToggles: [ListToggle] = []
-    private var toggleSource: String?
-    /// ▸ でたたんだトグルの先頭。カーソルが子の行に入っているあいだは、たたまずに見せる
-    private var foldedLists: Set<Int> = []
-    /// 書き換えで位置を見失った、たたんだトグルの名前と書き換えた位置。書き換えのあとで同じ名前の項目を探して戻す
-    private var lostFolds: [(key: String, location: Int)] = []
-    /// 直近の装飾でたたんで見せたトグル
-    private var collapsedLists: [ListToggle] = []
+    /// 開閉の印で、ファイルの `-`/`+` と逆の状態にしたコールアウトの見出し行の先頭。
+    /// `[!note]-` はカーソルが外にあってもたたまず、トグルは `-` なら開き、`+` ならたたむ。ファイルは書き換えない
+    private var flippedCallouts: Set<Int> = []
+    /// 直近の装飾でたたんで見せたトグル。隠した中身の行にはカーソルを入れない
+    private var collapsedToggles: [ToggleBlock] = []
 
     /// ソース表示（装飾なし）かどうか。切り替えと記録は EditorAreaViewController が受け持つ
     var sourceMode = false {
@@ -711,12 +641,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.textContainer?.widthTracksTextView = true
         textView.onTextWidthChange = { [weak self] in self?.restyle(force: true) }
         textView.onColumnDrag = { [weak self] in self?.restyle(force: true) }
-        textView.onToggleListFold = { [weak self] start in self?.toggleListFold(at: start) }
-        textView.onToggleFold = { [weak self] header in
-            guard let self else { return }
-            if expandedCallouts.remove(header) == nil { expandedCallouts.insert(header) }
-            restyle(force: true)
-        }
+        textView.onToggleFold = { [weak self] header in self?.toggleFold(at: header) }
         setUpProperties()
         slashMenu.onChoose = { [weak self] command in self?.applySlashCommand(command) }
         // 取り消し・やり直しでは textDidChange が呼ばれないことがあるので、ここでも保存と装飾をやり直す。
@@ -772,11 +697,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.string = document?.text ?? ""
         reportedText = textView.string
         schemaEntries = nil
-        expandedCallouts = []
-        toggleSource = textView.string
-        listToggles = ListToggle.find(in: textView.string)
-        foldedLists = document.map { ListToggle.restore(ListToggle.load(for: $0.url), in: listToggles) } ?? []
-        lostFolds = []
+        flippedCallouts = []
         textView.undoManager?.removeAllActions()
         let length = (textView.string as NSString).length
         if let state = document?.viewState {
@@ -831,7 +752,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         }
 
         closeSlashMenu()
-        shiftExpandedCallouts(replacing: range, with: replacement)
+        shiftFlippedCallouts(replacing: range, with: replacement)
         storage.replaceCharacters(in: range, with: replacement)
         textView.textDidReload()
         reportedText = textView.string
@@ -1022,11 +943,6 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         guard force || lines != activeLines || cell != activeCell else { return }
         activeLines = lines
         activeCell = cell
-        updateListToggles()
-        // カーソルが子の行にあるあいだは、たたんだトグルも開いて見せる
-        collapsedLists = sourceMode ? [] : listToggles.filter {
-            foldedLists.contains($0.start) && NSIntersectionRange($0.hidden, lines).length == 0
-        }
         frontmatter = sourceMode ? nil : Frontmatter.parse(storage.string)
         let properties = textView.propertiesView
         if let frontmatter {
@@ -1044,8 +960,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
                               selection: selection,
                               draggedWidths: textView.draggedWidths,
                               frontmatter: frontmatter.flatMap { fm in height.map { (fm.range, $0) } },
-                              calloutIcons: showsCalloutIcons, expandedCallouts: expandedCallouts,
-                              collapsedLists: collapsedLists)
+                              calloutIcons: showsCalloutIcons, flippedCallouts: flippedCallouts)
         let string = storage.string as NSString
         storage.beginEditing()
         var position = 0
@@ -1058,83 +973,40 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         storage.endEditing()
         textView.typingAttributes = styler.baseAttributes
         textView.placeProperties(height: height)
-        textView.listToggles = sourceMode ? [] : listToggles.map { toggle in (toggle, collapsedLists.contains(toggle)) }
-    }
-
-    // MARK: - トグル（折りたためるリスト項目）
-
-    /// 本文が変わっていたらトグルを求め直す。位置を見失ったたたみは同じ名前の項目に戻し、子の行がなくなった項目のたたみは忘れる
-    private func updateListToggles() {
-        let text = textView.string
-        guard text != toggleSource else { return }
-        toggleSource = text
-        listToggles = ListToggle.find(in: text)
-        for lost in lostFolds {
-            let candidates = listToggles.filter { $0.key == lost.key && !foldedLists.contains($0.start) }
-            if let nearest = candidates.min(by: { abs($0.start - lost.location) < abs($1.start - lost.location) }) {
-                foldedLists.insert(nearest.start)
-            }
+        collapsedToggles = sourceMode ? [] : ToggleBlock.find(in: storage.string).filter { toggle in
+            guard let content = toggle.content else { return false }
+            return toggle.isCollapsed(flipped: flippedCallouts.contains(toggle.header)) && NSIntersectionRange(content, lines).length == 0
         }
-        lostFolds = []
-        foldedLists.formIntersection(listToggles.map(\.start))
-        saveListFolds()
     }
 
-    private func saveListFolds() {
-        guard let url else { return }
-        ListToggle.save(ListToggle.storedKeys(of: foldedLists, in: listToggles), for: url)
-    }
+    // MARK: - コールアウトとトグルの開閉
 
-    /// ▸/▾ を押したとき。たたむときにカーソルが子の行にあれば、項目の最初の行の末尾へ出す
-    private func toggleListFold(at start: Int) {
-        guard let toggle = listToggles.first(where: { $0.start == start }) else { return }
-        if collapsedLists.contains(toggle) {
-            foldedLists.remove(start)
-        } else {
-            foldedLists.insert(start)
-            if NSIntersectionRange(activeLines, toggle.hidden).length > 0 {
-                textView.setSelectedRange(NSRange(location: toggle.headerEnd, length: 0))
-            }
+    /// 開閉の印を押したとき。トグルをたたむときにカーソルが中身の行にあれば、見出し行の末尾へ出す（中身にカーソルがあると開いたままになる）
+    private func toggleFold(at header: Int) {
+        if flippedCallouts.remove(header) == nil { flippedCallouts.insert(header) }
+        if let toggle = ToggleBlock.find(in: textView.string).first(where: { $0.header == header }),
+           let content = toggle.content, toggle.isCollapsed(flipped: flippedCallouts.contains(header)),
+           NSIntersectionRange(activeLines, content).length > 0 {
+            textView.setSelectedRange(NSRange(location: toggle.headerEnd, length: 0))
         }
-        saveListFolds()
         restyle(force: true)
     }
 
-    /// たたんだトグルの位置を、書き換えで増減した文字数に合わせて動かす。
-    /// 項目の先頭が書き換える範囲にかかるとき（ドラッグでの移動や階層の変更）は、名前を覚えておいて書き換えのあとで探す
-    private func shiftListFolds(replacing range: NSRange, with replacement: String?) {
-        guard !foldedLists.isEmpty else { return }
-        updateListToggles()
-        let delta = ((replacement ?? "") as NSString).length - range.length
-        var shifted = Set<Int>()
-        for start in foldedLists {
-            if start < range.location {
-                shifted.insert(start)
-            } else if start >= NSMaxRange(range) && !(range.length == 0 && start == range.location) {
-                shifted.insert(start + delta)
-            } else if let toggle = listToggles.first(where: { $0.start == start }) {
-                lostFolds.append((toggle.key, range.location))
-            }
-        }
-        foldedLists = shifted
-    }
-
-    /// たたんだ子の行と隣の行を消去でつなげると、つないだ文字が隠れてしまうので、先に開く
-    private func unfoldBeforeJoining(_ selector: Selector) {
+    /// たたんだトグルの隠した行と隣の行を消去でつなげると、つないだ文字が隠れてしまうので、先に開く
+    private func unfoldToggleBeforeJoining(_ selector: Selector) {
         let selection = textView.selectedRange()
         guard selection.length == 0 else { return }
-        let joined: ListToggle?
+        let joined: ToggleBlock?
         switch selector {
         case #selector(NSResponder.deleteBackward(_:)):
-            joined = collapsedLists.first { NSMaxRange($0.hidden) + 1 == selection.location }
+            joined = collapsedToggles.first { $0.content.map { NSMaxRange($0) + 1 } == selection.location }
         case #selector(NSResponder.deleteForward(_:)):
-            joined = collapsedLists.first { $0.headerEnd == selection.location }
+            joined = collapsedToggles.first { $0.headerEnd == selection.location }
         default:
             joined = nil
         }
         guard let joined else { return }
-        foldedLists.remove(joined.start)
-        saveListFolds()
+        if flippedCallouts.remove(joined.header) == nil { flippedCallouts.insert(joined.header) }
         restyle(force: true)
     }
 
@@ -1236,18 +1108,15 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
         if replacementString == "/", range.length == 0, !textView.hasMarkedText() { typedSlash = range.location }
         let allowed = shouldAllowChange(in: range)
-        if allowed {
-            shiftExpandedCallouts(replacing: range, with: replacementString)
-            shiftListFolds(replacing: range, with: replacementString)
-        }
+        if allowed { shiftFlippedCallouts(replacing: range, with: replacementString) }
         return allowed
     }
 
     /// 開閉の印で開いたコールアウトの位置を、書き換えで増減した文字数に合わせて動かす。書き換える範囲の中の見出しは忘れる
-    private func shiftExpandedCallouts(replacing range: NSRange, with replacement: String?) {
-        guard !expandedCallouts.isEmpty else { return }
+    private func shiftFlippedCallouts(replacing range: NSRange, with replacement: String?) {
+        guard !flippedCallouts.isEmpty else { return }
         let delta = ((replacement ?? "") as NSString).length - range.length
-        expandedCallouts = Set(expandedCallouts.compactMap { header in
+        flippedCallouts = Set(flippedCallouts.compactMap { header in
             if header < range.location { return header }
             if header >= NSMaxRange(range) { return header + delta }
             return nil
@@ -1270,7 +1139,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     /// Tab で次のセル、Shift+Tab で前のセル、Enter で下の行、Shift+Enter でセル内の改行（<br>）
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         if handleSlashMenuCommand(selector) { return true }
-        if !sourceMode { unfoldBeforeJoining(selector) }
+        if !sourceMode { unfoldToggleBeforeJoining(selector) }
         if !sourceMode, selector == #selector(NSResponder.insertTab(_:))
             || selector == #selector(NSResponder.insertBacktab(_:)),
            shiftListItems(outdent: selector == #selector(NSResponder.insertBacktab(_:))) {
@@ -1280,7 +1149,10 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         let caret = textView.selectedRange().location
         guard let table = tables.first(where: { NSLocationInRange(caret, $0.tableRange) || caret == $0.endOfLastRow }),
               let (row, column) = table.cell(containing: caret)
-        else { return breakCalloutLine(selector, at: caret) || breakListLine(selector, at: caret) || continueList(selector, at: caret) }
+        else {
+            return breakCalloutLine(selector, at: caret) || breakListLine(selector, at: caret) || continueList(selector, at: caret)
+                || continueToggle(selector, at: caret)
+        }
         let columns = table.columnWidths.count
         switch selector {
         case #selector(NSResponder.insertTab(_:)):
@@ -1352,16 +1224,68 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     private func continueList(_ selector: Selector, at caret: Int) -> Bool {
         guard selector == #selector(NSResponder.insertNewline(_:)),
               !textView.returnKeyHasShift,
-              var edit = ListContinuation.edit(in: textView.string as NSString, caret: caret)
+              let edit = ListContinuation.edit(in: textView.string as NSString, caret: caret)
         else { return false }
-        // たたんだトグルの最初の行の末尾では、次の項目を隠した子の行の後ろに作る（手前に作ると、子がその項目に付く）
-        if edit.replacement.hasPrefix("\n"), let toggle = collapsedLists.first(where: { $0.headerEnd == caret }) {
-            let end = NSMaxRange(toggle.hidden)
-            edit = ListContinuation.Edit(range: NSRange(location: end, length: 0), replacement: edit.replacement,
-                                         caret: end + (edit.replacement as NSString).length)
-        }
         textView.replace(edit.range, with: edit.replacement, actionName: "改行")
         textView.setSelectedRange(NSRange(location: edit.caret, length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
+        return true
+    }
+
+    /// トグルの中で Enter を押したとき。次の行にも同じ深さの `>` を付けてトグルの中に行を作る。
+    /// 中身の最後の空の行ではトグルを抜ける。たたんだトグルの見出し行では、中身が空なら開いて中身の行へ、中身があればトグルの後ろに行を作る
+    private func continueToggle(_ selector: Selector, at caret: Int) -> Bool {
+        guard selector == #selector(NSResponder.insertNewline(_:)), !textView.returnKeyHasShift else { return false }
+        let string = textView.string as NSString
+        // カーソルを含む、いちばん内側のトグル
+        guard let toggle = ToggleBlock.find(in: textView.string).last(where: {
+            $0.header <= caret && caret <= ($0.content.map(NSMaxRange) ?? $0.headerEnd)
+        }) else { return false }
+        func insert(_ text: String, at location: Int) {
+            textView.replace(NSRange(location: location, length: 0), with: text, actionName: "改行")
+            textView.setSelectedRange(NSRange(location: location + (text as NSString).length, length: 0))
+        }
+        let prefix = toggle.prefix.hasSuffix(" ") || toggle.prefix.hasSuffix("\t") ? toggle.prefix : toggle.prefix + " "
+        let lines = toggle.contentLines(in: string)
+
+        if caret <= toggle.headerEnd {
+            // タイトルより手前（`> [!toggle]-` の途中）では通常の改行にする
+            guard caret >= toggle.titleStart else { return false }
+            guard collapsedToggles.contains(toggle), let content = toggle.content else {
+                insert("\n" + prefix, at: caret)
+                return true
+            }
+            let isBlank = { (line: NSRange) in
+                string.substring(with: line).allSatisfy { $0 == ">" || $0 == " " || $0 == "\t" }
+            }
+            if lines.allSatisfy(isBlank) {
+                // 作ったばかりの空のトグル。開いて中身の最初の行へ（先に開かないと、隠した行に入れずに見出し行へ戻される）
+                if flippedCallouts.remove(toggle.header) == nil { flippedCallouts.insert(toggle.header) }
+                restyle(force: true)
+                textView.setSelectedRange(NSRange(location: NSMaxRange(lines[0]), length: 0))
+            } else {
+                insert("\n\n", at: NSMaxRange(content))
+            }
+            textView.scrollRangeToVisible(textView.selectedRange())
+            return true
+        }
+
+        guard let line = lines.first(where: { $0.location <= caret && caret <= NSMaxRange($0) }) else { return false }
+        let text = string.substring(with: line)
+        let prefixLength = ToggleBlock.prefixLength(of: text)
+        guard caret >= line.location + prefixLength else { return false }
+        let depth = ToggleBlock.depth(of: text)
+        if depth == toggle.depth, prefixLength == (text as NSString).length, line == lines.last {
+            // 中身の最後の空の行ではトグルを抜ける。前の行に続けて読まれないよう、空行を挟む
+            let outer = ToggleBlock.prefix(depth: toggle.depth - 1)
+            let replacement = outer + "\n" + outer
+            textView.replace(line, with: replacement, actionName: "改行")
+            textView.setSelectedRange(NSRange(location: line.location + (replacement as NSString).length, length: 0))
+        } else {
+            var linePrefix = string.substring(with: NSRange(location: line.location, length: prefixLength))
+            if !linePrefix.hasSuffix(" ") && !linePrefix.hasSuffix("\t") { linePrefix += " " }
+            insert("\n" + linePrefix, at: caret)
+        }
         textView.scrollRangeToVisible(textView.selectedRange())
         return true
     }
@@ -1416,21 +1340,23 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         if let frontmatter, new.length == 0, new.location < NSMaxRange(frontmatter.range) {
             return NSRange(location: NSMaxRange(frontmatter.range), length: 0)
         }
+        // たたんだトグルの中身の行にはカーソルを入れず、下へ動くときはトグルの次の行の先頭、上へ動くときは見出し行の末尾へ飛ばす
+        if !sourceMode, new.length == 0,
+           let toggle = collapsedToggles.filter({ toggle in
+               toggle.content.map { $0.location <= new.location && new.location <= NSMaxRange($0) } ?? false
+           }).max(by: { $0.content!.length < $1.content!.length }),
+           let content = toggle.content {
+            let after = NSMaxRange(content) + 1
+            if new.location > old.location, after <= (textView.string as NSString).length {
+                return NSRange(location: after, length: 0)
+            }
+            return NSRange(location: toggle.headerEnd, length: 0)
+        }
         // 表のセルの <br> の途中は見えない位置なので、キー操作なら進む向きの端、クリックなら手前の端へ寄せる
         if !sourceMode, new.length == 0, tables.contains(where: { NSLocationInRange(new.location, $0.tableRange) }),
            let tag = lineBreakTag(around: new.location) {
             let forward = NSApp.currentEvent?.type == .keyDown && new.location > old.location
             return NSRange(location: forward ? NSMaxRange(tag) : tag.location, length: 0)
-        }
-        // たたんだ子の行にはカーソルを入れず、下へ動くときは次の行の先頭、上へ動くときは項目の最初の行の末尾へ飛ばす
-        if !sourceMode, new.length == 0,
-           let toggle = collapsedLists.filter({ $0.hidden.location <= new.location && new.location <= NSMaxRange($0.hidden) })
-               .max(by: { $0.hidden.length < $1.hidden.length }) {
-            let after = NSMaxRange(toggle.hidden) + 1
-            if new.location > old.location, after <= (textView.string as NSString).length {
-                return NSRange(location: after, length: 0)
-            }
-            return NSRange(location: toggle.headerEnd, length: 0)
         }
         guard !sourceMode, new.length == 0,
               let table = tables.first(where: {

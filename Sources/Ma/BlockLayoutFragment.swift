@@ -15,6 +15,8 @@ extension NSAttributedString.Key {
     static let maAIComment = NSAttributedString.Key("ma.aiComment")
     /// 表の編集中のセルで、<br> の「>」に付ける。表示のうえだけ行区切り（U+2028）に置き換えてセルの中で改行する
     static let maLineBreak = NSAttributedString.Key("ma.lineBreak")
+    /// トグルの中身の段落に付ける。値は字下げの幅（CGFloat）。フラグメントは表や枠をこの分だけ右から描く
+    static let maInset = NSAttributedString.Key("ma.inset")
 }
 
 /// チェックボックスの状態。rawValue は `[ ]` の中の文字
@@ -92,6 +94,25 @@ final class BoxDecoration: NSObject, @unchecked Sendable {
         BoxDecoration(color: .tertiaryLabelColor, icon: nil, fallbackTitle: nil, foldable: false, collapsed: false,
                       isFirst: isFirst, isLast: isLast, isQuote: true)
     }
+}
+
+/// トグル（`> [!toggle]`）の見出し行。枠や背景は描かず、行頭に ▸/▾ を描く
+final class ToggleDecoration: NSObject, @unchecked Sendable {
+    let collapsed: Bool
+    /// タイトルが空で記号を隠しているときに、代わりに薄く描く文字
+    let placeholder: String?
+
+    init(collapsed: Bool, placeholder: String?) {
+        self.collapsed = collapsed
+        self.placeholder = placeholder
+    }
+
+    override func isEqual(_ object: Any?) -> Bool {
+        guard let other = object as? ToggleDecoration else { return false }
+        return collapsed == other.collapsed && placeholder == other.placeholder
+    }
+
+    override var hash: Int { collapsed.hashValue ^ placeholder.hashValue }
 }
 
 /// ``` で囲んだコードブロックの1行。ブロックの全行に付け、背景を1枚の角丸としてつなげて描く
@@ -287,15 +308,18 @@ final class TableRowDecoration: NSObject, @unchecked Sendable {
 /// 段落に付いた装飾を、テキストの下（背景・罫線）と上（アイコン・セル）に描く
 final class BlockLayoutFragment: NSTextLayoutFragment {
     var decoration: NSObject?
+    /// トグルの中身の字下げ。表や枠は本文の左端からこの分だけ右に描く
+    var inset: CGFloat = 0
 
     private var padding: CGFloat { textLayoutManager?.textContainer?.lineFragmentPadding ?? 5 }
-    private var availableWidth: CGFloat {
-        (textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width) - padding * 2
-    }
+    private var containerWidth: CGFloat { textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width }
+    private var availableWidth: CGFloat { containerWidth - padding * 2 - inset }
+    /// 装飾を描く左端（テキストコンテナの座標）
+    private var left: CGFloat { padding + inset }
 
-    /// フラグメントの原点はインデント後の位置にあるので、本文の左端（行頭の余白の内側）までの距離を求める
+    /// フラグメントの原点はインデント後の位置にあるので、装飾の左端（行頭の余白の内側）までの距離を求める
     private func textLeft(from point: CGPoint) -> CGFloat {
-        point.x - layoutFragmentFrame.minX + padding
+        point.x - layoutFragmentFrame.minX + left
     }
 
     /// 最初の行で、文字が占める範囲の縦中央。最小行高で広がった分は文字の上に入る
@@ -315,25 +339,20 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
 
     /// Link Embed のカードの枠（横はテキストコンテナ、縦はフラグメントの上端からの座標）
     func embedCardRect() -> CGRect {
-        EmbedCard.cardRect(left: padding, width: min(availableWidth, 640))
+        EmbedCard.cardRect(left: left, width: min(availableWidth, 640))
     }
 
     /// 表の各列の右端の x 座標（テキストコンテナの座標系）と、描画時の縮小率
     func columnEdges() -> (edges: [CGFloat], scale: CGFloat)? {
         guard let row = decoration as? TableRowDecoration else { return nil }
         let (widths, scale) = row.layout.scaledWidths(available: availableWidth)
-        var x = padding
+        var x = left
         return (widths.map { x += $0; return x }, scale)
     }
 
     override var renderingSurfaceBounds: CGRect {
         guard decoration != nil else { return super.renderingSurfaceBounds }
-        var full = CGRect(x: -layoutFragmentFrame.minX, y: 0,
-                          width: padding * 2 + availableWidth, height: layoutFragmentFrame.height)
-        // 最上位の項目の ▸ は本文の左端より外に出る
-        if let fold = decoration as? ListFoldDecoration, let rect = listToggleRect(indentLength: fold.indentLength) {
-            full = full.union(rect)
-        }
+        let full = CGRect(x: -layoutFragmentFrame.minX, y: 0, width: containerWidth, height: layoutFragmentFrame.height)
         return super.renderingSurfaceBounds.union(full)
     }
 
@@ -355,12 +374,10 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
             // 元の文字は透明なので、カードだけを描く
             let rect = embedCardRect().offsetBy(dx: point.x - layoutFragmentFrame.minX, dy: point.y)
             MainActor.assumeIsolated { card.draw(in: rect) }
-        case let fold as ListFoldDecoration:
+        case let toggle as ToggleDecoration:
             super.draw(at: point, in: context)
             drawCheckboxes(at: point)
-            if let rect = listToggleRect(indentLength: fold.indentLength) {
-                ListToggle.drawTriangle(collapsed: true, in: rect.offsetBy(dx: point.x, dy: point.y))
-            }
+            drawToggleHeader(toggle, at: point)
         case let row as TableRowDecoration:
             // 罫線と背景を先に描き、セルの文字（元の Markdown の文字）はその上に通常どおり描く
             drawTableRow(row, at: point)
@@ -412,16 +429,6 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
             }
         }
         return result
-    }
-
-    /// トグルの ▸/▾ の位置（フラグメント内の座標）。最初の行の記号の手前に、文字の縦中央をそろえて置く
-    func listToggleRect(indentLength: Int) -> CGRect? {
-        guard let line = textLineFragments.first else { return nil }
-        let bounds = line.typographicBounds
-        let x = bounds.minX + line.locationForCharacter(at: min(indentLength, line.characterRange.length)).x
-        let centerY = bounds.minY + line.glyphOrigin.y - NSFont.systemFont(ofSize: 15).capHeight / 2
-        let size = ListToggle.buttonSize
-        return CGRect(x: x - size - 2, y: centerY - size / 2, width: size, height: size)
     }
 
     private func drawCheckboxes(at point: CGPoint) {
@@ -509,11 +516,16 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
         NSAttributedString(string: collapsed ? "›" : "⌄", attributes: [.font: chevronFont, .foregroundColor: color])
     }
 
-    /// 折りたためるコールアウトの右上の開閉の印の、クリックを受ける範囲（横はテキストコンテナ、縦はフラグメントの上端からの座標）
+    /// 折りたためるコールアウトの右上の開閉の印（トグルは行頭の ▸/▾）の、クリックを受ける範囲
+    /// （横はテキストコンテナ、縦はフラグメントの上端からの座標）
     func foldButtonRect() -> CGRect? {
+        if decoration is ToggleDecoration {
+            let side: CGFloat = 22
+            return CGRect(x: left + ToggleBlock.triangleCenter - side / 2, y: firstLineTextCenter(from: .zero) - side / 2, width: side, height: side)
+        }
         guard let box = decoration as? BoxDecoration, box.isFirst, box.foldable else { return nil }
         let size = Self.chevron(collapsed: box.collapsed, color: box.color).size()
-        let center = CGPoint(x: padding + availableWidth - 14 - size.width / 2, y: firstLineTextCenter(from: .zero))
+        let center = CGPoint(x: left + availableWidth - 14 - size.width / 2, y: firstLineTextCenter(from: .zero))
         let side: CGFloat = 24
         return CGRect(x: center.x - side / 2, y: center.y - side / 2, width: side, height: side)
     }
@@ -549,6 +561,18 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
             chevron.draw(at: CGPoint(x: textLeft(from: point) + availableWidth - 14 - size.width,
                                      y: center - size.height / 2))
         }
+    }
+
+    /// トグルの見出し行の ▸/▾ と、タイトルが空のときの薄い文字
+    private func drawToggleHeader(_ toggle: ToggleDecoration, at point: CGPoint) {
+        let center = firstLineTextCenter(from: point)
+        let left = textLeft(from: point)
+        ToggleBlock.drawTriangle(collapsed: toggle.collapsed, center: CGPoint(x: left + ToggleBlock.triangleCenter, y: center))
+        guard let placeholder = toggle.placeholder else { return }
+        let string = NSAttributedString(string: placeholder, attributes: [
+            .font: NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.tertiaryLabelColor,
+        ])
+        string.draw(at: CGPoint(x: left + ToggleBlock.indent, y: center - string.size().height / 2))
     }
 
     private func drawTableRow(_ row: TableRowDecoration, at point: CGPoint) {
@@ -608,6 +632,7 @@ final class BlockLayoutDelegate: NSObject, NSTextLayoutManagerDelegate {
         let fragment = BlockLayoutFragment(textElement: textElement, range: textElement.elementRange)
         if let paragraph = textElement as? NSTextParagraph, paragraph.attributedString.length > 0 {
             fragment.decoration = paragraph.attributedString.attribute(.maBlock, at: 0, effectiveRange: nil) as? NSObject
+            fragment.inset = paragraph.attributedString.attribute(.maInset, at: 0, effectiveRange: nil) as? CGFloat ?? 0
         }
         return fragment
     }
