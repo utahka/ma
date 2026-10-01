@@ -223,7 +223,10 @@ final class EditorTextView: NSTextView {
             return
         }
         guard let hit = columnEdge(at: point) else {
-            enterTableCell(at: point)
+            if enterTableCell(at: point) {
+                window?.makeFirstResponder(self)
+                return
+            }
             return super.mouseDown(with: event)
         }
         // 境界を掴んだときはカーソルを表に入れない（入れるとソース表示に切り替わる）。
@@ -393,27 +396,30 @@ final class EditorTextView: NSTextView {
         return (row.layout, column, scale)
     }
 
-    /// カーソルのある表の行で、ほかのセルをクリックしたら、先にカーソルをそのセルへ移す。
+    /// 表のセルをクリックしたら、先にカーソルをそのセルへ移す。
     /// ほかのセルの元の文字は幅ゼロで隠しているので、そのままではクリックした位置の文字を当てられない。
     /// セルを移すと装飾がかけ直され、続く super の mouseDown はそのセルの文字の上で位置を決める
-    private func enterTableCell(at point: NSPoint) {
+    /// 空セルでは元の文字がすべて幅ゼロなので、文字の当たり判定に渡さずクリックを処理したことを返す
+    private func enterTableCell(at point: NSPoint) -> Bool {
         let location = containerPoint(point)
         guard let fragment = fragment(at: location),
-              let row = fragment.decoration as? TableRowDecoration, let live = row.liveColumn,
+              let row = fragment.decoration as? TableRowDecoration, row.kind != .separator,
               let edges = fragment.columnEdges()?.edges,
-              let column = edges.firstIndex(where: { location.x < $0 }), column != live,
+              let column = edges.firstIndex(where: { location.x < $0 }),
               let content = textLayoutManager?.textContentManager
-        else { return }
+        else { return false }
         let start = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
         let paragraph = NSRange(location: start, length: content.offset(from: fragment.rangeInElement.location,
                                                                         to: fragment.rangeInElement.endLocation))
         guard let cells = row.layout.rows.first(where: { $0.first.map { NSLocationInRange($0.location, paragraph) } == true }),
               column < cells.count
-        else { return }
+        else { return false }
         let string = self.string as NSString
         let cell = cells[column]
         var end = NSMaxRange(cell)
         while end > cell.location, [0x20, 0x09].contains(string.character(at: end - 1)) { end -= 1 }
+        let empty = end == cell.location
+        guard empty || column != row.liveColumn else { return false }
         setSelectedRange(NSRange(location: end == cell.location ? cell.location + min(1, cell.length) : end, length: 0))
         // 装飾をかけ直した行をレイアウトし直してから、super にクリックの位置を求めさせる
         if let from = content.location(content.documentRange.location, offsetBy: paragraph.location),
@@ -421,6 +427,7 @@ final class EditorTextView: NSTextView {
            let range = NSTextRange(location: from, end: to) {
             textLayoutManager?.ensureLayout(for: range)
         }
+        return empty
     }
 
     /// マウス位置にチェックボックスがあれば、`[ ]` の文書内の範囲とチェック状態を返す
