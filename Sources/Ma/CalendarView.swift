@@ -91,7 +91,8 @@ final class CalendarView: NSView {
     @objc private func showPreviousMonth() { show(month: calendar.date(byAdding: .month, value: -1, to: month)!) }
     @objc private func showNextMonth() { show(month: calendar.date(byAdding: .month, value: 1, to: month)!) }
     @objc private func showToday() { show(month: Date()) }
-    @objc private func dayDidChange() { DispatchQueue.main.async { self.needsDisplay = true } }
+    /// NSCalendarDayChanged はバックグラウンドのキューから届く。メインアクターの検査で落ちないよう nonisolated で受ける
+    @objc nonisolated private func dayDidChange() { Task { @MainActor in self.needsDisplay = true } }
 
     private func updateTitle() {
         let components = calendar.dateComponents([.year, .month], from: month)
