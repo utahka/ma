@@ -1,0 +1,32 @@
+{
+  "fill" : {
+    "solid" : "srgb:0.20000,0.19000,0.17500,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "grid.svg",
+          "name" : "grid"
+        },
+        {
+          "image-name" : "leaf.svg",
+          "name" : "leaf"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.4
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

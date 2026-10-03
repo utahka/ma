@@ -1,7 +1,10 @@
-.PHONY: run app install clean
+.PHONY: run icon app install clean
 
 run:
 	swift run
+
+icon:
+	./scripts/icon.sh
 
 app:
 	./scripts/bundle.sh
