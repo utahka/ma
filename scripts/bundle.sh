@@ -11,6 +11,8 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_dir/Ma" "$app/Contents/MacOS/Ma"
 cp Resources/Info.plist "$app/Contents/Info.plist"
+# アイコン（macOS 26 以降は Assets.car、それより前は Ma.icns を使う）
+cp Resources/Assets.car Resources/Ma.icns "$app/Contents/Resources/"
 
 # Apple Silicon では最低限アドホック署名が必要
 codesign --force --sign - "$app"
