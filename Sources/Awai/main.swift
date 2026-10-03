@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             split.addSplitViewItem(item)
         }
 
-        window = NSWindow(
+        window = AwaiWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false
@@ -317,31 +317,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 self, selector: #selector(trafficLightFrameDidChange(_:)), name: NSView.frameDidChangeNotification, object: button
             )
         }
+        (window as? AwaiWindow)?.onLayout = { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.placeTrafficLights(in: window)
+        }
         placeTrafficLights(in: window)
     }
 
-    /// AppKit が3つのボタンを順に並べ直している途中で呼ばれるので、並べ終わってから置き直す
-    /// （その場で動かすと、後から並べられる緑のボタンが元の位置に戻った）
+    /// 配置中の通知からはフレームを変更できないため、ウィンドウの配置完了時に戻す。
     @objc private func trafficLightFrameDidChange(_ notification: Notification) {
         guard let window = (notification.object as? NSView)?.window else { return }
-        DispatchQueue.main.async { [self] in placeTrafficLights(in: window) }
+        guard (window as? AwaiWindow)?.isPlacingTrafficLights != true else { return }
+        window.contentView?.needsLayout = true
     }
 
     /// フルスクリーンではメニューバーと一緒に出るので動かさない
     private func placeTrafficLights(in window: NSWindow) {
         guard !window.styleMask.contains(.fullScreen) else { return }
+        var changed = false
         for (index, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
-            guard let button = window.standardWindowButton(type), let superview = button.superview else { continue }
-            let top = TrafficLights.centerY - button.frame.height / 2
-            let origin = NSPoint(
-                x: TrafficLights.leading + CGFloat(index) * TrafficLights.spacing,
-                y: superview.isFlipped ? top : superview.bounds.height - top - button.frame.height
-            )
-            if button.frame.origin != origin { button.setFrameOrigin(origin) }
+            guard let button = window.standardWindowButton(type) else { continue }
+            if placeTrafficLight(button, at: index) { changed = true }
         }
+        guard changed else { return }
         // サイドバーを閉じているとき（分離したウィンドウは常に）、タブは緑のボタンの右から並ぶので描き直す
         let editor = detachedWindows.first { $0.window === window }?.editor ?? editor
         editor.tabBar.needsDisplay = true
+    }
+
+    @discardableResult
+    private func placeTrafficLight(_ button: NSButton, at index: Int) -> Bool {
+        guard let superview = button.superview else { return false }
+        let top = TrafficLights.centerY - button.frame.height / 2
+        let origin = NSPoint(
+            x: TrafficLights.leading + CGFloat(index) * TrafficLights.spacing,
+            y: superview.isFlipped ? top : superview.bounds.height - top - button.frame.height
+        )
+        // 自分の変更でも通知が届くので、位置が合っていれば何もしない。
+        guard button.frame.origin != origin else { return false }
+        button.setFrameOrigin(origin)
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
