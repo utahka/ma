@@ -54,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         window.center()
         window.setFrameAutosaveName("main")
-        window.title = "Ma"
+        window.title = "Awai"
         window.titlebarSeparatorStyle = .none
         // タイトルバーの帯と文字は出さず、信号機ボタンだけ本文の上に重ねる（タイトルは Mission Control やウィンドウメニューで使われる）
         window.titlebarAppearsTransparent = true
@@ -189,9 +189,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         vault.resolveSaveConflict = { url in
             let alert = NSAlert()
             alert.messageText = "ファイルが外部で変更されています"
-            alert.informativeText = "「\(url.lastPathComponent)」には Ma の未保存の編集もあります。残す内容を選んでください。"
+            alert.informativeText = "「\(url.lastPathComponent)」には Awai の未保存の編集もあります。残す内容を選んでください。"
             alert.addButton(withTitle: "外部の変更を読み込む")
-            alert.addButton(withTitle: "Ma の内容で上書き")
+            alert.addButton(withTitle: "Awai の内容で上書き")
             return alert.runModal() == .alertSecondButtonReturn
         }
         vault.onExternalChange = { [unowned self, weak vault, weak editor] in
@@ -209,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 sidebar.select(url)
                 sidebar.calendarView.selectedDate = url.flatMap { vault.dailyNotes?.date(of: $0) }
             }
-            window.title = url?.deletingPathExtension().lastPathComponent ?? "Ma"
+            window.title = url?.deletingPathExtension().lastPathComponent ?? "Awai"
             window.subtitle = vault.root?.lastPathComponent ?? ""
             updateNoteHeader(of: editor, vault: vault)
         }
@@ -295,7 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    /// `open -a Ma ノート.md` や Finder からファイルを渡されたとき
+    /// `open -a Awai ノート.md` や Finder からファイルを渡されたとき
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first(where: { $0.pathExtension.lowercased() == "md" }) else { return }
         if let root = vault.root, url.path.hasPrefix(root.path + "/") {
@@ -390,7 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    /// Ma で開けないファイル（画像や PDF など）は Obsidian で開く。Obsidian がなければ既定のアプリに任せる
+    /// Awai で開けないファイル（画像や PDF など）は Obsidian で開く。Obsidian がなければ既定のアプリに任せる
     private func openBookmark(_ bookmark: Bookmark, newTab: Bool) {
         guard let url = bookmark.url else { return }
         switch bookmark.kind {
@@ -484,8 +484,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let main = NSMenu()
 
         let app = NSMenu()
-        app.addItem(withTitle: "Ma を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        main.addItem(submenu: app, title: "Ma")
+        app.addItem(withTitle: "Awai を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        main.addItem(submenu: app, title: "Awai")
 
         let file = NSMenu(title: "ファイル")
         file.addItem(withTitle: "新規タブ", action: #selector(newTab(_:)), keyEquivalent: "t")
@@ -576,6 +576,8 @@ private extension NSMenu {
     }
 }
 
+// エディタやサイドバーは作るときに設定を読むので、AppDelegate より先に引き継ぐ
+AppDefaults.migrateFromMa()
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

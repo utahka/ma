@@ -10,8 +10,8 @@ app:
 	./scripts/bundle.sh
 
 install: app
-	rm -rf /Applications/Ma.app
-	cp -R build/Ma.app /Applications/
+	rm -rf /Applications/Awai.app
+	cp -R build/Awai.app /Applications/
 
 clean:
 	rm -rf .build build

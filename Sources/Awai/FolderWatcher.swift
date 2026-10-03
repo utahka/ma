@@ -2,7 +2,7 @@ import CoreServices
 import Foundation
 
 /// vault のフォルダ全体を FSEvents で見張り、変わったファイルのパスをまとめて知らせる。
-/// AI エージェントや git が裏でノートを書き換えても、Ma を前面に出したまま反映するために使う。
+/// AI エージェントや git が裏でノートを書き換えても、Awai を前面に出したまま反映するために使う。
 /// 保存のたびに届く細かい通知は、最後の通知から `delay` 待ってから1回にまとめる
 @MainActor
 final class FolderWatcher {

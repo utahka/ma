@@ -1,6 +1,6 @@
 import Foundation
 
-/// swiftc -enable-bare-slash-regex Sources/Ma/BlockMover.swift Tests/TableRowMoveTests.swift -o /tmp/ma-table-row-tests
+/// swiftc -enable-bare-slash-regex Sources/Awai/BlockMover.swift Tests/TableRowMoveTests.swift -o /tmp/awai-table-row-tests
 @main
 struct TableRowMoveTests {
     static func main() {

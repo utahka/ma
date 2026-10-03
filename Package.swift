@@ -2,15 +2,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "Ma",
+    name: "Awai",
     platforms: [.macOS(.v15)],
     dependencies: [
         // `.base`（Obsidian の Bases）の YAML を読む
         .package(url: "https://github.com/jpsim/Yams.git", from: "6.2.0"),
     ],
     targets: [
-        .executableTarget(name: "Ma", dependencies: ["Yams"], path: "Sources/Ma"),
-        .testTarget(name: "MaTests", dependencies: ["Ma"], path: "Tests",
+        .executableTarget(name: "Awai", dependencies: ["Yams"], path: "Sources/Awai"),
+        .testTarget(name: "AwaiTests", dependencies: ["Awai"], path: "Tests",
                     exclude: ["AICommentSelectionTests.swift", "TableRowMoveTests.swift"],
                     sources: ["TabTransferTests.swift", "AICommentStylingTests.swift", "WikiLinkCompletionTests.swift", "NoteRenameTests.swift"])
     ]

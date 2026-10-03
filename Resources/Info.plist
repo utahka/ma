@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Ma</string>
+    <string>Awai</string>
     <key>CFBundleDisplayName</key>
-    <string>Ma</string>
+    <string>Awai</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.utahka.ma</string>
+    <string>dev.utahka.awai</string>
     <key>CFBundleExecutable</key>
-    <string>Ma</string>
+    <string>Awai</string>
     <key>CFBundleIconFile</key>
-    <string>Ma</string>
+    <string>Awai</string>
     <key>CFBundleIconName</key>
-    <string>Ma</string>
+    <string>Awai</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

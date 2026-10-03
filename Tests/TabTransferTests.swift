@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import Ma
+@testable import Awai
 
 final class TabTransferTests: XCTestCase {
     func testTransferPreservesTabAndHistoryAndLastTab() async throws {

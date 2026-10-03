@@ -1,7 +1,8 @@
 import Foundation
 
-/// `.base` の `properties` の `ma:` に書く、Ma 独自のプロパティの型。
-/// ノートに書く値は Obsidian でも読める文字列・リストのままで、選択肢・色・既定値は Ma だけが使う
+/// `.base` の `properties` の `ma:` に書く、Awai 独自のプロパティの型。
+/// キー名 `ma:` は旧名 Ma のときに書いたファイルを読めるよう、改名後もそのまま使う
+/// ノートに書く値は Obsidian でも読める文字列・リストのままで、選択肢・色・既定値は Awai だけが使う
 struct PropertySchema: Equatable {
     enum Kind: String {
         case select
@@ -12,7 +13,7 @@ struct PropertySchema: Equatable {
     struct Option: Equatable {
         /// ファイルに書く文字列（例: `1 🔵 未着手`）
         let value: String
-        /// Ma に表示する名前（例: `未着手`）
+        /// Awai に表示する名前（例: `未着手`）
         let label: String
         /// 色の名前（gray / brown / orange / yellow / green / blue / purple / pink / red）
         let color: String
@@ -25,7 +26,7 @@ struct PropertySchema: Equatable {
     /// 値がないノートで、入っているものとして扱う値
     let defaultValue: String?
 
-    /// `ma:` の辞書から作る。Ma の型でなければ nil
+    /// `ma:` の辞書から作る。Awai の型でなければ nil
     init?(_ map: [String: Any]) {
         guard let kind = (map["type"] as? String).flatMap(Kind.init(rawValue:)) else { return nil }
         self.kind = kind
