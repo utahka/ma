@@ -24,7 +24,7 @@ struct FrontmatterEntry: Equatable {
 }
 
 /// ノートの先頭の `---` で囲んだプロパティ。書き換えは該当するプロパティの行だけを差し替える形で返し、
-/// ほかの行（コメントや Ma が解釈しない書き方）には触れない
+/// ほかの行（コメントや Awai が解釈しない書き方）には触れない
 struct Frontmatter: Equatable {
     /// 先頭の `---` から閉じの `---` の行末（改行を含む）まで
     let range: NSRange

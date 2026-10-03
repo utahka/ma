@@ -616,7 +616,7 @@ final class BaseViewController: NSViewController, NSTableViewDataSource, NSTable
         return nil
     }
 
-    /// そのビューの `order` の末尾に列を足す。新しいプロパティなら、型を `.base` の `properties:`（Ma の型）か
+    /// そのビューの `order` の末尾に列を足す。新しいプロパティなら、型を `.base` の `properties:`（Awai の型）か
     /// `.obsidian/types.json`（Obsidian の型）に書く。ノートには書かない（値を入れたときに書く）
     private func addProperty(named name: String, kind: BasePropertyAdder.Kind) {
         // 列の幅の保存を待っていたら先に書く（あとから古い列の並びで書き戻さないように）

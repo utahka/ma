@@ -1,5 +1,5 @@
 // 実行: tmpdir=$(mktemp -d); cp Tests/AICommentSelectionTests.swift "$tmpdir/main.swift"
-// swiftc Sources/Ma/AICommentSelection.swift "$tmpdir/main.swift" -o "$tmpdir/check" && "$tmpdir/check"
+// swiftc Sources/Awai/AICommentSelection.swift "$tmpdir/main.swift" -o "$tmpdir/check" && "$tmpdir/check"
 import Foundation
 func check(_ input: String, _ expected: String, range: NSRange? = nil) {
     let result = AICommentSelection.replacement(in: input, range: range ?? NSRange(location: 0, length: (input as NSString).length), comment: "短く")

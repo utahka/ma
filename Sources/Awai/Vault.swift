@@ -16,11 +16,23 @@ final class FileNode {
     }
 }
 
-/// アプリの設定の保存先。動作確認では環境変数 MA_DEFAULTS_SUITE で別の保存先を指定し、
+/// アプリの設定の保存先。動作確認では環境変数 AWAI_DEFAULTS_SUITE で別の保存先を指定し、
 /// ふだん使っている設定（最後に開いた vault など）を書き換えないようにする
 enum AppDefaults {
     nonisolated(unsafe) static let shared: UserDefaults =
-        ProcessInfo.processInfo.environment["MA_DEFAULTS_SUITE"].flatMap { UserDefaults(suiteName: $0) } ?? .standard
+        ProcessInfo.processInfo.environment["AWAI_DEFAULTS_SUITE"].flatMap { UserDefaults(suiteName: $0) } ?? .standard
+
+    /// 旧名 Ma（Bundle ID `dev.utahka.ma`）の設定を一度だけ引き継ぐ。
+    /// AppKit が保存するウィンドウの位置も同じドメインにあるので、まとめて standard へコピーする
+    static func migrateFromMa() {
+        let defaults = UserDefaults.standard
+        let migratedKey = "migratedFromMa"
+        guard Bundle.main.bundleIdentifier == "dev.utahka.awai", !defaults.bool(forKey: migratedKey) else { return }
+        for (key, value) in defaults.persistentDomain(forName: "dev.utahka.ma") ?? [:] where defaults.object(forKey: key) == nil {
+            defaults.set(value, forKey: key)
+        }
+        defaults.set(true, forKey: migratedKey)
+    }
 }
 
 /// エディタに渡す開いているノート
@@ -312,17 +324,17 @@ final class Vault {
         guard let root, relativePath(of: url) != nil, url.pathExtension.lowercased() == "md",
               !name.isEmpty, name != ".", name != "..", !name.hasPrefix("."),
               name.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\:\n\r\0")) == nil else {
-            throw NSError(domain: "Ma.Rename", code: 1, userInfo: [NSLocalizedDescriptionKey: "使用できるノート名を入力してください。フォルダや拡張子は変更できません。"])
+            throw NSError(domain: "Awai.Rename", code: 1, userInfo: [NSLocalizedDescriptionKey: "使用できるノート名を入力してください。フォルダや拡張子は変更できません。"])
         }
         let destination = url.deletingLastPathComponent().appendingPathComponent(name + "." + url.pathExtension)
         if destination.path == url.path { return url }
         guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw NSError(domain: "Ma.Rename", code: 2, userInfo: [NSLocalizedDescriptionKey: "同じ名前のファイルが既にあります。"])
+            throw NSError(domain: "Awai.Rename", code: 2, userInfo: [NSLocalizedDescriptionKey: "同じ名前のファイルが既にあります。"])
         }
         guard !folder.vaults.contains(where: { vault in
             vault.tabs.contains { $0.url?.path == url.path && vault.isComposing?($0.id) == true }
         }) else {
-            throw NSError(domain: "Ma.Rename", code: 3, userInfo: [NSLocalizedDescriptionKey: "日本語の変換を確定してから名前を変更してください。"])
+            throw NSError(domain: "Awai.Rename", code: 3, userInfo: [NSLocalizedDescriptionKey: "日本語の変換を確定してから名前を変更してください。"])
         }
         let pending = pendingTexts[url]
         let knownBeforeSave = diskTexts[url]
@@ -330,7 +342,7 @@ final class Vault {
         // 保存失敗で編集内容を失わない。外部の内容を選んだ場合は更新された diskTexts を使う。
         if let pending, diskTexts[url] != pending, diskTexts[url] == knownBeforeSave {
             textDidChange(pending, url: url)
-            throw NSError(domain: "Ma.Rename", code: 4, userInfo: [NSLocalizedDescriptionKey: "編集内容を保存できなかったため、名前の変更を中止しました。"])
+            throw NSError(domain: "Awai.Rename", code: 4, userInfo: [NSLocalizedDescriptionKey: "編集内容を保存できなかったため、名前の変更を中止しました。"])
         }
         try FileManager.default.moveItem(at: url, to: destination)
         if let known = diskTexts.removeValue(forKey: url) { diskTexts[destination] = known }
@@ -724,7 +736,7 @@ final class Vault {
         return (changed, deferred)
     }
 
-    /// `FolderWatcher` が知らせた変更を反映する。開いているノートは読み直し（Ma 自身の保存は `diskTexts` と同じなので読み直さない）、
+    /// `FolderWatcher` が知らせた変更を反映する。開いているノートは読み直し（Awai 自身の保存は `diskTexts` と同じなので読み直さない）、
     /// ノートの追加・削除・名前の変更ならファイル一覧を作り直し、`.obsidian` の types.json・bookmarks.json も読み直す
     fileprivate func applyFileChanges(_ change: FolderWatcher.Change) {
         guard let root else { return }

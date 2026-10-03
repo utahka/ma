@@ -2,7 +2,7 @@ import AppKit
 
 /// `.base` の表の「＋」から出すポップオーバー。新しいプロパティの名前と型を選ぶ
 final class BasePropertyAdder: NSViewController, NSTextFieldDelegate {
-    /// 選べる型。Obsidian の型は `.obsidian/types.json` に、Ma の型は `.base` の `ma:` に書く
+    /// 選べる型。Obsidian の型は `.obsidian/types.json` に、Awai の型は `.base` の `ma:` に書く
     enum Kind: CaseIterable {
         case text, number, date, checkbox, select, multiSelect, status
 

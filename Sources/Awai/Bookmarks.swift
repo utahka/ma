@@ -7,7 +7,7 @@ struct Bookmark {
         case folder
         case url
         case group([Bookmark])
-        /// 検索・グラフなど Ma が扱わない種類。ファイルには残す
+        /// 検索・グラフなど Awai が扱わない種類。ファイルには残す
         case other
     }
 
@@ -34,7 +34,7 @@ struct Bookmark {
     }
 }
 
-/// `.obsidian/bookmarks.json` の読み書き。Obsidian と同じファイルを使い、Ma が扱わない種類の項目やキーもそのまま残す
+/// `.obsidian/bookmarks.json` の読み書き。Obsidian と同じファイルを使い、Awai が扱わない種類の項目やキーもそのまま残す
 enum Bookmarks {
     static func fileURL(root: URL) -> URL {
         root.appendingPathComponent(".obsidian/bookmarks.json")
