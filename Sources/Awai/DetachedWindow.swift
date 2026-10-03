@@ -12,7 +12,7 @@ final class DetachedWindow: NSObject, NSWindowDelegate {
 
     init(vault: Vault, frame: NSRect) {
         self.vault = vault
-        window = NSWindow(
+        window = AwaiWindow(
             contentRect: frame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false
