@@ -43,15 +43,19 @@ final class Replacement: NSObject, @unchecked Sendable {
     let symbol: String
     let color: NSColor
 
-    init(_ symbol: String, color: NSColor) {
+    /// 箇条書きはフォントの字形に依存しない塗りつぶしの円で描く。
+    let isBullet: Bool
+
+    init(_ symbol: String, color: NSColor, isBullet: Bool = false) {
         self.symbol = symbol
         self.color = color
+        self.isBullet = isBullet
     }
 
     // 再装飾のたびに作り直すので、中身で比べる（変わっていない段落のレイアウトを捨てないため）
     override func isEqual(_ object: Any?) -> Bool {
         guard let other = object as? Replacement else { return false }
-        return symbol == other.symbol && color == other.color
+        return symbol == other.symbol && color == other.color && isBullet == other.isBullet
     }
 
     override var hash: Int { symbol.hashValue }
@@ -406,6 +410,17 @@ final class BlockLayoutFragment: NSTextLayoutFragment {
                 let baselineOffset = line.attributedString.attribute(.baselineOffset, at: range.location, effectiveRange: nil) as? CGFloat ?? 0
                 // ベースラインを元の文字に揃え、横は元の文字の中央に置く
                 let baseline = point.y + bounds.minY + line.glyphOrigin.y - baselineOffset
+                if replacement.isBullet {
+                    let diameter = font.pointSize * 0.34
+                    let centerX = point.x + bounds.minX + (start + end) / 2
+                    // 日本語本文の中央に合わせ、大文字の高さを基準にする。
+                    let centerY = baseline - font.capHeight / 2
+                    replacement.color.setFill()
+                    NSBezierPath(ovalIn: CGRect(x: centerX - diameter / 2,
+                                               y: centerY - diameter / 2,
+                                               width: diameter, height: diameter)).fill()
+                    return
+                }
                 symbol.draw(at: CGPoint(x: point.x + bounds.minX + (start + end - symbol.size().width) / 2,
                                         y: baseline - font.ascender))
             }
