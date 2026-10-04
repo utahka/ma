@@ -871,9 +871,9 @@ struct MarkdownStyler {
             guard checkbox.location != NSNotFound else {
                 let bullet = match.range(at: 1)
                 if bullet.length == 1 {
-                    // `-` `*` `+` は中黒で表示する
+                    // `-` `*` `+` は本文色の丸で表示し、項目の区切りを見つけやすくする
                     storage.addAttributes([.foregroundColor: NSColor.clear,
-                                           .maReplacement: Replacement("・", color: .secondaryLabelColor)], range: bullet)
+                                           .maReplacement: Replacement("•", color: .maText, isBullet: true)], range: bullet)
                 } else {
                     storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: bullet)
                 }
