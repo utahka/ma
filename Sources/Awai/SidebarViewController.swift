@@ -39,6 +39,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     var isBookmarked: ((URL) -> Bool)?
     /// 右クリックメニューから、ノートかフォルダを削除する
     var onDelete: ((URL) -> Void)?
+    var onCreate: ((URL?, Bool) -> Void)?
+    var onRename: ((URL) -> Void)?
     /// タブの切り替えに合わせて選択行を動かしている間は、ノートを開き直さない
     private var isSyncingSelection = false
     let calendarView = CalendarView()
@@ -116,6 +118,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             outlineView.menu = menu
             scrollViews[mode] = makeList(outlineView)
         }
+        let searchMenu = NSMenu()
+        searchMenu.delegate = self
+        searchView.menu = searchMenu
         searchScrollView = makeList(searchView)
         searchScrollView.isHidden = true
 
@@ -479,8 +484,26 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let outlineView = menu === bookmarksView.menu ? bookmarksView : filesView
-        switch outlineView.item(atRow: outlineView.clickedRow) {
+        let outlineView = menu === bookmarksView.menu ? bookmarksView : (menu === searchView.menu ? searchView : filesView)
+        let clicked = outlineView.item(atRow: outlineView.clickedRow)
+        let file = (clicked as? FileNode) ?? (clicked as? SearchResult)?.node
+        if outlineView !== bookmarksView {
+            let parent = file.map { $0.isDirectory ? $0.url : $0.url.deletingLastPathComponent() }
+            for (title, action) in [("新規ファイル…", #selector(createFile(_:))), ("新規フォルダ…", #selector(createFolder(_:)))] {
+                let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+                item.target = self
+                item.representedObject = parent
+            }
+            if let file {
+                menu.addItem(.separator())
+                if !file.isDirectory {
+                    let item = menu.addItem(withTitle: "ファイル名を変更…", action: #selector(renameFile(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = file.url
+                }
+            }
+        }
+        switch file as Any? ?? clicked {
         case let node as FileNode:
             let title = isBookmarked?(node.url) == true ? "お気に入りから外す" : "お気に入りに追加"
             let item = menu.addItem(withTitle: title, action: #selector(toggleBookmark(_:)), keyEquivalent: "")
@@ -497,6 +520,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         default:
             break
         }
+    }
+
+    @objc private func createFile(_ sender: NSMenuItem) { onCreate?(sender.representedObject as? URL, false) }
+    @objc private func createFolder(_ sender: NSMenuItem) { onCreate?(sender.representedObject as? URL, true) }
+    @objc private func renameFile(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        onRename?(url)
     }
 
     @objc private func toggleBookmark(_ sender: NSMenuItem) {

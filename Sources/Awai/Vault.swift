@@ -317,11 +317,37 @@ final class Vault {
         rescan()
     }
 
+    /// 既存の項目を上書きせず、指定された階層に作成する。
+    @discardableResult
+    func createItem(in parent: URL, name: String, isDirectory: Bool) throws -> URL {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var directory: ObjCBool = false
+        guard let root, (parent.standardizedFileURL == root.standardizedFileURL || relativePath(of: parent) != nil),
+              FileManager.default.fileExists(atPath: parent.path, isDirectory: &directory), directory.boolValue,
+              !name.isEmpty, !name.hasPrefix("."),
+              name.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\:\n\r\0")) == nil else {
+            throw NSError(domain: "Awai.Create", code: 1, userInfo: [NSLocalizedDescriptionKey: "使用できる名前と作成先を指定してください。"])
+        }
+        let filename = isDirectory || name.lowercased().hasSuffix(".md") ? name : name + ".md"
+        let url = parent.appendingPathComponent(filename, isDirectory: isDirectory)
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw NSError(domain: "Awai.Create", code: 2, userInfo: [NSLocalizedDescriptionKey: "同じ名前のファイルまたはフォルダが既にあります。"])
+        }
+        if isDirectory {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        } else {
+            try Data().write(to: url, options: .withoutOverwriting)
+            open(url, newTab: true)
+        }
+        rescan()
+        return url
+    }
+
     /// 同じフォルダ・同じ拡張子でファイル名を変え、開いているタブと履歴の参照も更新する。
     @discardableResult
     func renameNote(_ url: URL, to name: String) throws -> URL {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let root, relativePath(of: url) != nil, url.pathExtension.lowercased() == "md",
+        guard let root, relativePath(of: url) != nil, ["md", "base"].contains(url.pathExtension.lowercased()),
               !name.isEmpty, name != ".", name != "..", !name.hasPrefix("."),
               name.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\:\n\r\0")) == nil else {
             throw NSError(domain: "Awai.Rename", code: 1, userInfo: [NSLocalizedDescriptionKey: "使用できるノート名を入力してください。フォルダや拡張子は変更できません。"])
