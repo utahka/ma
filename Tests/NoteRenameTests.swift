@@ -43,6 +43,28 @@ final class NoteRenameTests: XCTestCase {
         }
     }
 
+    func testCreateFileAndFolderWithoutOverwriting() async throws {
+        try await MainActor.run {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let vault = Vault()
+            vault.setRoot(root, remember: false)
+            defer { vault.leaveFolder() }
+            let folder = try vault.createItem(in: root, name: "資料", isDirectory: true)
+            let note = try vault.createItem(in: folder, name: "メモ.md", isDirectory: false)
+            XCTAssertEqual(note.lastPathComponent, "メモ.md")
+            XCTAssertEqual(vault.activeTab.url, note)
+            try "keep".write(to: note, atomically: true, encoding: .utf8)
+            XCTAssertThrowsError(try vault.createItem(in: folder, name: "メモ", isDirectory: false))
+            XCTAssertThrowsError(try vault.createItem(in: root, name: "資料", isDirectory: true))
+            for name in ["", "../escape", ".hidden", "a/b", "a\nname"] {
+                XCTAssertThrowsError(try vault.createItem(in: root, name: name, isDirectory: false))
+            }
+            XCTAssertEqual(try String(contentsOf: note, encoding: .utf8), "keep")
+        }
+    }
+
     func testCollisionAndInvalidNamesLeaveFilesIntact() async throws {
         try await MainActor.run {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

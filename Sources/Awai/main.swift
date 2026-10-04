@@ -75,6 +75,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         sidebar.onToggleBookmark = { [vault] url in vault.toggleBookmark(url) }
         sidebar.onRemoveBookmark = { [vault] indexPath in vault.removeBookmark(at: indexPath) }
         sidebar.isBookmarked = { [vault] url in vault.isBookmarked(url) }
+        sidebar.onRename = { [unowned self] url in renameFile(url, in: vault) }
+        sidebar.onCreate = { [unowned self] parent, directory in
+            guard let parent = parent ?? vault.root else { return }
+            let alert = NSAlert()
+            alert.messageText = directory ? "新規フォルダ" : "新規ファイル"
+            alert.informativeText = directory ? "フォルダ名を入力してください。" : "Markdown ファイルを作成します。"
+            alert.addButton(withTitle: "作成")
+            alert.addButton(withTitle: "キャンセル")
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+            alert.accessoryView = field
+            alert.window.initialFirstResponder = field
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            do { try vault.createItem(in: parent, name: field.stringValue, isDirectory: directory) }
+            catch { NSAlert(error: error).runModal() }
+        }
         sidebar.onDelete = { [unowned self] url in delete(url) }
         vault.onBookmarksChange = { [unowned self] in
             sidebar.reload(bookmarks: vault.bookmarks)
@@ -88,29 +103,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
+    private func renameFile(_ url: URL, in vault: Vault) {
+        let alert = NSAlert()
+        alert.messageText = "ファイル名を変更"
+        alert.informativeText = "フォルダと拡張子はそのままです。ほかのノート内のリンクは変更しません。"
+        alert.addButton(withTitle: "変更")
+        alert.addButton(withTitle: "キャンセル")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.stringValue = url.deletingPathExtension().lastPathComponent
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do { try vault.renameNote(url, to: field.stringValue) }
+        catch {
+            let message = NSAlert()
+            message.messageText = "名前を変更できませんでした"
+            message.informativeText = error.localizedDescription
+            message.runModal()
+        }
+    }
+
     /// メインウィンドウと分離したウィンドウに共通の、エディタ・タブバーと `Vault` の結び付け。
     /// 分離したウィンドウは閉じると捨てるので、クロージャは弱参照で持つ
     private func connect(_ editor: EditorAreaViewController, to vault: Vault, in window: NSWindow) {
         let isMain = vault === self.vault
-        editor.onRenameNote = { [weak vault] in
+        editor.onRenameNote = { [unowned self, weak vault] in
             guard let vault, let url = vault.activeTab.url else { return }
-            let alert = NSAlert()
-            alert.messageText = "ファイル名を変更"
-            alert.informativeText = "フォルダと拡張子はそのままです。ほかのノート内のリンクは変更しません。"
-            alert.addButton(withTitle: "変更")
-            alert.addButton(withTitle: "キャンセル")
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
-            field.stringValue = url.deletingPathExtension().lastPathComponent
-            alert.accessoryView = field
-            alert.window.initialFirstResponder = field
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-            do { try vault.renameNote(url, to: field.stringValue) }
-            catch {
-                let message = NSAlert()
-                message.messageText = "名前を変更できませんでした"
-                message.informativeText = error.localizedDescription
-                message.runModal()
-            }
+            self.renameFile(url, in: vault)
         }
         vault.onDocumentRename = { [weak editor] oldURL, newURL in editor?.renameDocument(from: oldURL, to: newURL) }
         editor.onChange = { [weak vault] url, text in vault?.textDidChange(text, url: url) }
